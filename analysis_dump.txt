@@ -1,0 +1,3282 @@
+===== src/components/BirthdayView.tsx =====
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  BirthdaySettings,
+  BirthdayWishContactSummary,
+  BirthdayWishHistoryItem,
+  MessageTemplate,
+} from '../types.ts';
+import {
+  Cake,
+  Calendar as CalendarIcon,
+  ListFilter,
+  Settings,
+  History,
+  Send,
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  Edit3,
+  Search,
+  Sparkles,
+  PartyPopper,
+  X,
+  Check,
+  Power,
+  Phone,
+  CalendarDays,
+  UserCheck,
+  ExternalLink,
+} from 'lucide-react';
+
+type TabType = 'list' | 'calendar' | 'history' | 'settings';
+type FilterType = 'all' | 'today' | 'upcoming' | 'this_month';
+
+export const BirthdayView: React.FC = () => {
+  const { fetchWithAuth } = useAuth();
+
+  // State
+  const [activeTab, setActiveTab] = useState<TabType>('list');
+  const [filterType, setFilterType] = useState<FilterType>('all');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Data
+  const [summaryList, setSummaryList] = useState<BirthdayWishContactSummary[]>([]);
+  const [historyList, setHistoryList] = useState<BirthdayWishHistoryItem[]>([]);
+  const [settings, setSettings] = useState<BirthdaySettings>({
+    enabled: true,
+    defaultSendTime: '09:00',
+    defaultTemplateId: 1,
+    customMessage: '🎉 Happy Birthday {{name}}! Wishing you a fantastic year filled with happiness, health, and success! 🎂🎈',
+    timezone: 'Asia/Kolkata',
+  });
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+
+  // Modals & Editing
+  const [editingWish, setEditingWish] = useState<BirthdayWishContactSummary | null>(null);
+  const [customWishText, setCustomWishText] = useState('');
+  const [editScheduledTime, setEditScheduledTime] = useState('');
+  const [editTemplateId, setEditTemplateId] = useState<number>(1);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Quick Send Modal
+  const [quickSendContact, setQuickSendContact] = useState<BirthdayWishContactSummary | null>(null);
+  const [quickSendText, setQuickSendText] = useState('');
+  const [sendingNow, setSendingNow] = useState(false);
+
+  // Calendar navigation state
+  const [calendarDate, setCalendarDate] = useState<Date>(new Date());
+
+  // Show Toast
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setToastMessage({ type, text });
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 4000);
+  };
+
+  // Load Data
+  const loadData = async (retries = 2) => {
+    setLoading(true);
+    try {
+      const [sumRes, setRes, histRes, tmplRes] = await Promise.all([
+        fetchWithAuth('/api/wishflow/summary'),
+        fetchWithAuth('/api/wishflow/settings'),
+        fetchWithAuth('/api/wishflow/history'),
+        fetchWithAuth('/api/whatsapp/templates'),
+      ]);
+
+      const safeJson = async <T,>(res: Response, fallback: T): Promise<T> => {
+        if (!res.ok) return fallback;
+        const ct = res.headers.get('content-type');
+        if (!ct || !ct.includes('application/json')) return fallback;
+        try {
+          return await res.json();
+        } catch {
+          return fallback;
+        }
+      };
+
+      const sumData = await safeJson(sumRes, null);
+      if (sumData) setSummaryList(sumData);
+
+      const setData = await safeJson(setRes, null);
+      if (setData) setSettings(setData);
+
+      const histData = await safeJson(histRes, null);
+      if (histData) setHistoryList(histData);
+
+      const tmplData = await safeJson(tmplRes, null);
+      if (tmplData) setTemplates(tmplData);
+    } catch (err: any) {
+      if (retries > 0) {
+        setTimeout(() => loadData(retries - 1), 800);
+      } else {
+        console.warn('Notice loading Birthday WishFlow data:', err?.message || err);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  // Sync All Birthdays
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    try {
+      const res = await fetchWithAuth('/api/wishflow/sync', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'All birthdays synced and scheduled successfully!');
+        await loadData();
+      } else {
+        showToast(data.error || 'Failed to sync birthdays', 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Sync failed', 'error');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Toggle Contact Automation
+  const handleToggleContact = async (contactId: number, currentStatus: boolean) => {
+    const nextStatus = !currentStatus;
+    try {
+      const res = await fetchWithAuth(`/api/wishflow/contacts/${contactId}/toggle`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: nextStatus }),
+      });
+      if (res.ok) {
+        setSummaryList((prev) =>
+          prev.map((c) =>
+            c.contactId === contactId
+              ? {
+                  ...c,
+                  birthdayAutomationEnabled: nextStatus,
+                  automationStatus: nextStatus ? 'SCHEDULED' : 'PAUSED',
+                }
+              : c
+          )
+        );
+        showToast(
+          nextStatus
+            ? 'Birthday WishFlow enabled for contact'
+            : 'Birthday WishFlow paused for contact'
+        );
+      }
+    } catch (err) {
+      showToast('Failed to toggle contact automation', 'error');
+    }
+  };
+
+  // Save Settings
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSyncing(true);
+    try {
+      const res = await fetchWithAuth('/api/wishflow/settings', {
+        method: 'POST',
+        body: JSON.stringify(settings),
+      });
+      if (res.ok) {
+        showToast('WishFlow settings updated and scheduled dates refreshed!');
+        await loadData();
+      } else {
+        showToast('Failed to update settings', 'error');
+      }
+    } catch (err) {
+      showToast('Error saving settings', 'error');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Open Edit Wish Modal
+  const openEditModal = (item: BirthdayWishContactSummary) => {
+    setEditingWish(item);
+    setCustomWishText(
+      item.customMessage ||
+        settings.customMessage
+          .replace(/{{name}}/g, item.contactName)
+          .replace(/{{age}}/g, String(item.ageTurning))
+    );
+    setEditTemplateId(item.templateId || settings.defaultTemplateId || 1);
+    setEditScheduledTime(
+      item.nextScheduledTime
+        ? item.nextScheduledTime.slice(0, 16)
+        : new Date().toISOString().slice(0, 16)
+    ); // YYYY-MM-DDTHH:mm
+  };
+
+  // Save Edited Wish
+  const handleSaveWishEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingWish) return;
+    setSavingEdit(true);
+    try {
+      if (editingWish.automationId) {
+        const res = await fetchWithAuth(`/api/wishflow/automations/${editingWish.automationId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            customMessage: customWishText,
+            templateId: editTemplateId,
+            scheduledAt: new Date(editScheduledTime).toISOString(),
+          }),
+        });
+        if (res.ok) {
+          showToast('Birthday wish message and schedule updated!');
+          setEditingWish(null);
+          await loadData();
+        } else {
+          showToast('Failed to update wish schedule', 'error');
+        }
+      } else {
+        showToast('Wish automation not found to update', 'error');
+      }
+    } catch (err) {
+      showToast('Error saving wish changes', 'error');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  // Open Quick Send Modal
+  const openSendNowModal = (item: BirthdayWishContactSummary) => {
+    setQuickSendContact(item);
+    setQuickSendText(
+      item.customMessage ||
+        settings.customMessage
+          .replace(/{{name}}/g, item.contactName)
+          .replace(/{{age}}/g, String(item.ageTurning))
+===== src/components/ContactsView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { Contact } from '../types.ts';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  UserPlus,
+  Search,
+  CheckCircle2,
+  XCircle,
+  Edit2,
+  Trash2,
+  Phone,
+  AlertCircle,
+  X,
+  Cake,
+} from 'lucide-react';
+
+export const ContactsView: React.FC = () => {
+  const { fetchWithAuth } = useAuth();
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+
+  // Modal states
+  const [showModal, setShowModal] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [optIn, setOptIn] = useState(true);
+  const [dob, setDob] = useState('');
+  const [birthdayAutomationEnabled, setBirthdayAutomationEnabled] = useState(true);
+  const [notes, setNotes] = useState('');
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadContacts = async () => {
+    setLoading(true);
+    try {
+      const url = search ? `/api/contacts?search=${encodeURIComponent(search)}` : '/api/contacts';
+      const res = await fetchWithAuth(url);
+      if (res.ok) {
+        const data = await res.json();
+        setContacts(data);
+      }
+    } catch (err) {
+      console.error('Failed to load contacts:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadContacts();
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const openCreateModal = () => {
+    setEditingContact(null);
+    setName('');
+    setPhone('');
+    setOptIn(true);
+    setDob('');
+    setBirthdayAutomationEnabled(true);
+    setNotes('');
+    setModalError(null);
+    setShowModal(true);
+  };
+
+  const openEditModal = (contact: Contact) => {
+    setEditingContact(contact);
+    setName(contact.name);
+    setPhone(contact.phone);
+    setOptIn(contact.optIn);
+    setDob(contact.dob || '');
+    setBirthdayAutomationEnabled(contact.birthdayAutomationEnabled !== false);
+    setNotes(contact.notes || '');
+    setModalError(null);
+    setShowModal(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setModalError(null);
+
+    try {
+      const endpoint = editingContact ? `/api/contacts/${editingContact.id}` : '/api/contacts';
+      const method = editingContact ? 'PUT' : 'POST';
+
+      const res = await fetchWithAuth(endpoint, {
+        method,
+        body: JSON.stringify({
+          name,
+          phone,
+          optIn,
+          dob: dob || null,
+          birthdayAutomationEnabled,
+          notes,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save contact');
+      }
+
+      setShowModal(false);
+      await loadContacts();
+    } catch (err: any) {
+      setModalError(err.message || 'Error saving contact');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (contact: Contact) => {
+    if (!window.confirm(`Are you sure you want to delete ${contact.name}?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetchWithAuth(`/api/contacts/${contact.id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        await loadContacts();
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-white tracking-tight">Contacts</h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            Customer directory with international WhatsApp numbers and opt-in compliance status.
+          </p>
+        </div>
+        <button
+          id="add-contact-button"
+          onClick={openCreateModal}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition cursor-pointer shadow-md shadow-emerald-950/40 shrink-0"
+        >
+          <UserPlus className="w-4 h-4" />
+          <span>Add Contact</span>
+        </button>
+      </div>
+
+      {/* Search Input */}
+      <div className="relative">
+        <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+        <input
+          id="contacts-search-input"
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by customer name or phone number..."
+          className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
+        />
+      </div>
+
+      {/* Contacts Table */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/80">
+                <th className="py-3 px-4 font-medium">Customer Name</th>
+                <th className="py-3 px-4 font-medium">WhatsApp Phone</th>
+                <th className="py-3 px-4 font-medium">Birthday (DOB)</th>
+                <th className="py-3 px-4 font-medium">Opt-In Status</th>
+                <th className="py-3 px-4 font-medium">Notes</th>
+                <th className="py-3 px-4 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {contacts.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-slate-500 text-sm">
+                    {loading ? 'Loading contacts...' : 'No contacts found. Click "Add Contact" to create one.'}
+                  </td>
+                </tr>
+              ) : (
+                contacts.map((c) => (
+                  <tr key={c.id} className="hover:bg-slate-800/40 transition">
+                    <td className="py-3.5 px-4">
+                      <span className="font-medium text-white">{c.name}</span>
+                    </td>
+                    <td className="py-3.5 px-4 font-mono text-xs text-slate-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                        {c.phone}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4">
+                      {c.dob ? (
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <Cake className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span className="text-slate-200 font-medium">{c.dob}</span>
+                          {c.birthdayAutomationEnabled !== false ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                              WishFlow ON
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                              Paused
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-500 italic">Not set</span>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-4">
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                          c.optIn
+                            ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                            : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                        }`}
+                      >
+                        {c.optIn ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3" /> YES (Opted In)
+                          </>
+                        ) : (
+                          <>
+                            <XCircle className="w-3 h-3" /> NO (Opted Out)
+                          </>
+                        )}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-xs text-slate-400 max-w-xs truncate">
+                      {c.notes || '—'}
+                    </td>
+                    <td className="py-3.5 px-4 text-right space-x-2">
+                      <button
+                        id={`edit-contact-${c.id}`}
+                        onClick={() => openEditModal(c)}
+                        className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+                        title="Edit contact"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button
+                        id={`delete-contact-${c.id}`}
+                        onClick={() => handleDelete(c)}
+                        className="p-1.5 rounded-lg hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                        title="Delete contact"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+===== src/components/CreateAutomationView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { Contact, MessageTemplate } from '../types.ts';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  Calendar,
+  Clock,
+  Send,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+  ArrowRight,
+  Info,
+} from 'lucide-react';
+
+interface CreateAutomationViewProps {
+  onAutomationCreated: () => void;
+  onNavigate: (tab: string) => void;
+}
+
+export const CreateAutomationView: React.FC<CreateAutomationViewProps> = ({
+  onAutomationCreated,
+  onNavigate,
+}) => {
+  const { fetchWithAuth } = useAuth();
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Form states
+  const [selectedContactId, setSelectedContactId] = useState<string>('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [variables, setVariables] = useState<Record<string, string>>({});
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
+  const [timezone, setTimezone] = useState('Asia/Kolkata');
+
+  // Execution states
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successData, setSuccessData] = useState<{
+    customer: string;
+    contactPhone: string;
+    scheduled: string;
+    template: string;
+    status: string;
+  } | null>(null);
+
+  // Initialize form with defaults
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const [cRes, tRes] = await Promise.all([
+          fetchWithAuth('/api/contacts'),
+          fetchWithAuth('/api/whatsapp/templates'),
+        ]);
+
+        if (cRes.ok) {
+          const cData = await cRes.json();
+          setContacts(cData);
+          if (cData.length > 0) setSelectedContactId(String(cData[0].id));
+        }
+
+        if (tRes.ok) {
+          const tData = await tRes.json();
+          // Filter strictly approved templates
+          const approved = tData.filter((t: MessageTemplate) => t.status === 'APPROVED');
+          setTemplates(approved);
+          if (approved.length > 0) {
+            setSelectedTemplateId(String(approved[0].id));
+            initVariables(approved[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load contacts/templates:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+
+    // Default to today + 1 hour in local time
+    const now = new Date();
+    now.setHours(now.getHours() + 1);
+    now.setMinutes(0);
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().slice(0, 5); // "HH:MM"
+    setScheduleDate(dateStr);
+    setScheduleTime(timeStr);
+  }, []);
+
+  const initVariables = (template: MessageTemplate) => {
+    const count = template.variableCount || 0;
+    const initialVars: Record<string, string> = {};
+    for (let i = 1; i <= count; i++) {
+      if (i === 1) initialVars['1'] = 'Rahul Sharma';
+      else if (i === 2) initialVars['2'] = 'Appointment #123';
+      else if (i === 3) initialVars['3'] = '15 September 2026';
+      else initialVars[String(i)] = '';
+    }
+    setVariables(initialVars);
+  };
+
+  const handleTemplateChange = (templateIdStr: string) => {
+    setSelectedTemplateId(templateIdStr);
+    const found = templates.find((t) => String(t.id) === templateIdStr);
+    if (found) {
+      initVariables(found);
+    }
+  };
+
+  const handleVariableChange = (varKey: string, val: string) => {
+    setVariables((prev) => ({
+      ...prev,
+      [varKey]: val,
+    }));
+  };
+
+  const handleSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessData(null);
+    setSubmitting(true);
+
+    try {
+      if (!selectedContactId) {
+        throw new Error('Please select a customer contact.');
+      }
+      if (!selectedTemplateId) {
+        throw new Error('Please select an approved WhatsApp template.');
+      }
+      if (!scheduleDate || !scheduleTime) {
+        throw new Error('Please select both a date and time for scheduled execution.');
+      }
+
+      // Compose ISO string
+      const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}:00`);
+      if (isNaN(scheduledDateTime.getTime())) {
+        throw new Error('Invalid scheduled date or time.');
+      }
+
+      const res = await fetchWithAuth('/api/automations', {
+        method: 'POST',
+        body: JSON.stringify({
+          contactId: parseInt(selectedContactId, 10),
+          templateId: parseInt(selectedTemplateId, 10),
+          variables,
+          scheduledAt: scheduledDateTime.toISOString(),
+          timezone,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to schedule automation');
+      }
+
+      setSuccessData({
+        customer: data.automation.customer,
+        contactPhone: data.automation.contactPhone,
+        scheduled: new Date(data.automation.scheduled).toLocaleString(undefined, {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }),
+        template: data.automation.template,
+        status: data.automation.status,
+      });
+
+      onAutomationCreated();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to schedule automation');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const selectedTemplate = templates.find((t) => String(t.id) === selectedTemplateId);
+  const selectedContact = contacts.find((c) => String(c.id) === selectedContactId);
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold text-white tracking-tight">Create Scheduled Automation</h1>
+        <p className="text-sm text-slate-400 mt-0.5">
+          Configure recipient, template parameters, and trigger time for official Meta WhatsApp Cloud API dispatch.
+        </p>
+      </div>
+
+      {errorMessage && (
+        <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-800 text-rose-300 text-xs flex items-start gap-3">
+          <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
+      {/* Success Card */}
+      {successData && (
+        <div
+          id="automation-success-card"
+          className="p-6 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 shadow-xl space-y-4"
+        >
+          <div className="flex items-center gap-2.5 text-emerald-400 font-semibold text-base">
+            <CheckCircle2 className="w-5 h-5" />
+            <span>Automation scheduled successfully</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl bg-emerald-950/60 border border-emerald-800/40 text-xs">
+            <div>
+              <span className="text-slate-400 block mb-0.5">Customer:</span>
+              <span className="font-medium text-white">{successData.customer}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Scheduled:</span>
+              <span className="font-medium text-white">{successData.scheduled}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Template:</span>
+              <span className="font-mono text-emerald-300">{successData.template}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Status:</span>
+              <span className="inline-flex items-center gap-1 font-mono px-2 py-0.5 rounded bg-emerald-900/80 border border-emerald-600 text-emerald-200 font-semibold">
+                {successData.status}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2">
+            <p className="text-xs text-slate-400">
+              The database background worker will process this job when the scheduled time arrives.
+            </p>
+            <button
+              onClick={() => onNavigate('automations')}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-xl transition cursor-pointer flex items-center gap-1.5"
+            >
+              <span>View Scheduled Automations</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create Automation Form */}
+      <form onSubmit={handleSchedule} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
+        {/* Contact Selector */}
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+            <span>Customer Contact *</span>
+            <button
+              type="button"
+              onClick={() => onNavigate('contacts')}
+              className="text-[11px] text-emerald-400 hover:underline cursor-pointer"
+            >
+              + Add new contact
+            </button>
+          </label>
+          <select
+            id="automation-customer-select"
+            required
+===== src/components/DashboardView.tsx =====
+import React from 'react';
+import { DashboardData } from '../types.ts';
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Send,
+  Users,
+  AlertTriangle,
+  Play,
+  ArrowUpRight,
+  ShieldCheck,
+  Cake,
+} from 'lucide-react';
+
+interface DashboardViewProps {
+  data: DashboardData | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onNavigate: (tab: string) => void;
+  onRunWorkerNow: (options?: any) => Promise<any>;
+  workerRunning: boolean;
+}
+
+export const DashboardView: React.FC<DashboardViewProps> = ({
+  data,
+  loading,
+  onRefresh,
+  onNavigate,
+  onRunWorkerNow,
+  workerRunning,
+}) => {
+  const isConnected = data?.connection?.status === 'CONNECTED' && data?.connection?.configured;
+
+  return (
+    <div className="space-y-8">
+      {/* Top Banner: WhatsApp Connection Status */}
+      <div
+        id="whatsapp-connection-banner"
+        className={`p-5 rounded-2xl border transition ${
+          isConnected
+            ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-100'
+            : 'bg-amber-950/30 border-amber-800/40 text-amber-100'
+        }`}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                isConnected
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+              }`}
+            >
+              {isConnected ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-base text-white">
+                  {isConnected ? 'WhatsApp Cloud API Connected' : 'WhatsApp API Not Configured'}
+                </h3>
+                <span
+                  className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                    isConnected
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}
+                >
+                  {data?.connection?.status || 'DISCONNECTED'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {isConnected ? (
+                  <span>
+                    Phone: <span className="text-slate-200">{data?.connection?.displayPhoneNumber || 'Registered'}</span>
+                    {data?.connection?.verifiedName && ` • Name: ${data.connection.verifiedName}`}
+                    {data?.connection?.qualityRating && ` • Quality: ${data.connection.qualityRating}`}
+                  </span>
+                ) : (
+                  'Configure your Meta App ID, Phone Number ID, and Access Token in WhatsApp Settings to enable sending.'
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              id="dashboard-worker-trigger-button"
+              onClick={onRunWorkerNow}
+              disabled={workerRunning}
+              title="Manually trigger scheduled jobs queue immediately"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer disabled:opacity-50"
+            >
+              <Play className={`w-3.5 h-3.5 text-emerald-400 ${workerRunning ? 'animate-spin' : ''}`} />
+              <span>{workerRunning ? 'Executing Queue...' : 'Run Queue Now'}</span>
+            </button>
+            <button
+              id="dashboard-manage-connection-button"
+              onClick={() => onNavigate('settings')}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition cursor-pointer shadow-sm"
+            >
+              <span>{isConnected ? 'Settings' : 'Configure WhatsApp'}</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Metrics Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Total Contacts */}
+        <div
+          id="stat-card-contacts"
+          onClick={() => onNavigate('contacts')}
+          className="p-5 bg-slate-900 border border-slate-800 rounded-2xl cursor-pointer hover:border-slate-700 transition group"
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-medium uppercase tracking-wider">Total Contacts</span>
+            <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-300 group-hover:text-white transition">
+              <Users className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-3xl font-semibold text-white tracking-tight">
+            {loading ? '—' : data?.stats?.totalContacts ?? 0}
+          </div>
+          <p className="text-xs text-slate-500 mt-1">Recipients in address book</p>
+        </div>
+
+        {/* Scheduled Messages */}
+        <div
+          id="stat-card-scheduled"
+          onClick={() => onNavigate('automations')}
+          className="p-5 bg-slate-900 border border-slate-800 rounded-2xl cursor-pointer hover:border-slate-700 transition group"
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-medium uppercase tracking-wider">Scheduled</span>
+            <div className="w-8 h-8 rounded-lg bg-amber-950/60 border border-amber-500/20 flex items-center justify-center text-amber-400 group-hover:scale-105 transition">
+              <Clock className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-3xl font-semibold text-white tracking-tight">
+            {loading ? '—' : data?.stats?.scheduledMessages ?? 0}
+          </div>
+          <p className="text-xs text-amber-500/80 mt-1">Pending queue execution</p>
+        </div>
+
+        {/* Messages Sent */}
+        <div
+          id="stat-card-sent"
+          onClick={() => onNavigate('automations')}
+          className="p-5 bg-slate-900 border border-slate-800 rounded-2xl cursor-pointer hover:border-slate-700 transition group"
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-medium uppercase tracking-wider">Messages Sent</span>
+            <div className="w-8 h-8 rounded-lg bg-emerald-950/60 border border-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition">
+              <Send className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-3xl font-semibold text-white tracking-tight">
+            {loading ? '—' : data?.stats?.messagesSent ?? 0}
+          </div>
+          <p className="text-xs text-emerald-500/80 mt-1">Sent & delivered via Meta</p>
+        </div>
+
+        {/* Failed Messages */}
+        <div
+          id="stat-card-failed"
+          onClick={() => onNavigate('automations')}
+          className="p-5 bg-slate-900 border border-slate-800 rounded-2xl cursor-pointer hover:border-slate-700 transition group"
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-medium uppercase tracking-wider">Failed</span>
+            <div className="w-8 h-8 rounded-lg bg-rose-950/60 border border-rose-500/20 flex items-center justify-center text-rose-400 group-hover:scale-105 transition">
+              <XCircle className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-3xl font-semibold text-white tracking-tight">
+            {loading ? '—' : data?.stats?.failedMessages ?? 0}
+          </div>
+          <p className="text-xs text-rose-500/80 mt-1">Errors or opt-out rejections</p>
+        </div>
+      </div>
+
+      {/* Birthday WishFlow Spotlight Card */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/30 border border-slate-800 hover:border-amber-500/30 rounded-2xl p-5 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3.5">
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+            <Cake className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-sm text-white">Birthday WishFlow Engine</h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                Annual Auto-Pilot
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Automatically detect birthdays annually, schedule WhatsApp wishes at 9:00 AM, and customize messages per customer.
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => onNavigate('birthdays')}
+          className="px-4 py-2 bg-amber-500 hover:bg-amber-450 text-slate-950 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer shrink-0"
+        >
+          <span>Open Birthday WishFlow</span>
+          <ArrowUpRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Upcoming Scheduled Messages section */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-white">Upcoming Scheduled Messages</h2>
+            <p className="text-xs text-slate-400">Automations queued for automatic backend dispatch</p>
+          </div>
+          <button
+            id="dashboard-schedule-new-button"
+            onClick={() => onNavigate('create')}
+            className="text-xs font-medium text-emerald-400 hover:text-emerald-300 transition flex items-center gap-1 cursor-pointer"
+          >
+            <span>Schedule New</span>
+            <ArrowUpRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {(!data?.upcoming || data.upcoming.length === 0) ? (
+          <div className="text-center py-10 text-slate-500 text-sm">
+            <Clock className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+            <p>No upcoming messages currently scheduled.</p>
+            <button
+              onClick={() => onNavigate('create')}
+              className="mt-3 text-xs text-emerald-400 hover:underline cursor-pointer"
+            >
+              Create your first automation &rarr;
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                  <th className="pb-3 font-medium">Customer</th>
+                  <th className="pb-3 font-medium">Template</th>
+                  <th className="pb-3 font-medium">Scheduled Time</th>
+                  <th className="pb-3 font-medium text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {data.upcoming.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-800/40 transition">
+                    <td className="py-3.5">
+                      <div className="font-medium text-white">{item.contactName}</div>
+                      <div className="text-xs text-slate-400">{item.contactPhone}</div>
+                    </td>
+                    <td className="py-3.5">
+                      <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-emerald-300 border border-slate-700">
+                        {item.templateName}
+===== src/components/LoginScreen.tsx =====
+import React, { useState } from 'react';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  MessageSquare,
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  ExternalLink,
+  KeyRound,
+  ShieldCheck,
+} from 'lucide-react';
+
+export const LoginScreen: React.FC = () => {
+  const { signInWithGoogle, signInWithRedirectFlow, signInAsDemoAdmin } = useAuth();
+  const [error, setError] = useState<string | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [isDemoSigningIn, setIsDemoSigningIn] = useState(false);
+  const [showPopupBlockedNotice, setShowPopupBlockedNotice] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    setError(null);
+    setShowPopupBlockedNotice(false);
+    setIsSigningIn(true);
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      console.warn('Google sign-in exception:', err);
+      // If popup blocked or domain not authorized in Firebase Console yet, fallback to admin login
+      if (
+        err.code === 'auth/popup-blocked' ||
+        err.code === 'auth/unauthorized-domain' ||
+        err.code === 'auth/popup-closed-by-user' ||
+        err.code === 'auth/cancelled-popup-request' ||
+        err.message?.includes('popup-blocked') ||
+        err.message?.includes('unauthorized-domain') ||
+        err.message?.includes('popup')
+      ) {
+        try {
+          await signInAsDemoAdmin();
+          return;
+        } catch (adminErr: any) {
+          setError(adminErr.message || 'Failed to authenticate');
+        }
+      } else {
+        setError(err.message || 'Failed to sign in. Please try again.');
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleRedirectLogin = async () => {
+    setError(null);
+    setIsSigningIn(true);
+    try {
+      await signInWithRedirectFlow();
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Redirect failed');
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleDemoAdminLogin = async () => {
+    setError(null);
+    setIsDemoSigningIn(true);
+    try {
+      await signInAsDemoAdmin();
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Failed to initialize session');
+    } finally {
+      setIsDemoSigningIn(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 selection:bg-emerald-500 selection:text-white">
+      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-7 relative overflow-hidden">
+        {/* Subtle top glow */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-1 bg-emerald-500 rounded-full blur-[2px]" />
+
+        <div className="space-y-3 text-center">
+          <div className="mx-auto w-14 h-14 rounded-2xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <MessageSquare className="w-7 h-7" />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">
+            WhatsApp Business Automation
+          </h1>
+          <p className="text-sm text-slate-400 max-w-xs mx-auto">
+            Official Meta WhatsApp Business Cloud API message scheduler & delivery monitor
+          </p>
+        </div>
+
+        {error && (
+          <div className="p-3.5 bg-rose-950/50 border border-rose-800/60 rounded-xl text-rose-300 text-xs space-y-2">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+              <span>{error}</span>
+            </div>
+            {showPopupBlockedNotice && (
+              <p className="text-slate-300 text-[11px] pl-6">
+                Browsers restrict third-party popups inside embedded iframes. You can open the app in a new tab or sign in directly below.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {/* Primary Google Login Button */}
+          <button
+            id="google-signin-button"
+            onClick={handleGoogleLogin}
+            disabled={isSigningIn || isDemoSigningIn}
+            className="w-full flex items-center justify-center gap-3 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-xl transition shadow-lg shadow-emerald-950/50 disabled:opacity-50 disabled:cursor-not-allowed group cursor-pointer text-sm"
+          >
+            {isSigningIn ? (
+              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <>
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                  <path
+                    fill="currentColor"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="currentColor"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="currentColor"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                  />
+                  <path
+                    fill="currentColor"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                  />
+                </svg>
+                <span>Sign in with Google</span>
+                <ArrowRight className="w-4 h-4 text-emerald-200 group-hover:translate-x-0.5 transition" />
+              </>
+            )}
+          </button>
+
+          {/* Iframe Safe Direct Admin Login */}
+          <div className="relative py-1 text-center">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-800" />
+            </div>
+            <span className="relative bg-slate-900 px-3 text-[11px] text-slate-500 uppercase tracking-wider">
+              or
+            </span>
+          </div>
+
+          <button
+            id="direct-admin-signin-button"
+            onClick={handleDemoAdminLogin}
+            disabled={isSigningIn || isDemoSigningIn}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-medium rounded-xl border border-slate-700 transition cursor-pointer text-xs"
+          >
+            {isDemoSigningIn ? (
+              <div className="w-4 h-4 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <>
+                <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Sign In as Administrator (Bypass Iframe Popup)</span>
+              </>
+            )}
+          </button>
+
+          {showPopupBlockedNotice && (
+            <button
+              id="redirect-signin-button"
+              onClick={handleRedirectLogin}
+              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 text-xs text-slate-400 hover:text-slate-200 transition underline cursor-pointer"
+            >
+              <span>Try Google Full-Page Redirect instead</span>
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        <div className="pt-4 border-t border-slate-800 space-y-2 text-xs text-slate-400">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>Official Meta Cloud API (Graph v21.0)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>PostgreSQL database on Cloud SQL</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>Database-backed atomic worker queue</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+===== src/components/ScheduledAutomationsView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { ScheduledAutomation } from '../types.ts';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Play,
+  RotateCcw,
+  Ban,
+  Eye,
+  X,
+  Phone,
+  AlertCircle,
+  Send,
+  AlertTriangle,
+  Settings,
+  Sparkles,
+  Info,
+  Smartphone,
+} from 'lucide-react';
+
+interface ScheduledAutomationsViewProps {
+  onRunWorkerNow: (options?: { forceAll?: boolean; simulate?: boolean }) => Promise<any>;
+  workerRunning: boolean;
+  onNavigate?: (tab: string) => void;
+  isAccountConfigured?: boolean;
+}
+
+export const ScheduledAutomationsView: React.FC<ScheduledAutomationsViewProps> = ({
+  onRunWorkerNow,
+  workerRunning,
+  onNavigate,
+  isAccountConfigured = false,
+}) => {
+  const { fetchWithAuth } = useAuth();
+  const [automations, setAutomations] = useState<ScheduledAutomation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedItem, setSelectedItem] = useState<{
+    automation: ScheduledAutomation;
+    messages: any[];
+  } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
+  const [runningId, setRunningId] = useState<number | null>(null);
+  const [simulationMode, setSimulationMode] = useState<boolean>(false);
+  const [missingCredsModal, setMissingCredsModal] = useState<{
+    automationId: number;
+    contactName: string;
+    contactPhone: string;
+  } | null>(null);
+  const [hideCredsBanner, setHideCredsBanner] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    type: 'success' | 'warning' | 'info' | 'error';
+    title: string;
+    message: string;
+  } | null>(null);
+
+  const loadAutomations = async () => {
+    setLoading(true);
+    try {
+      const res = await fetchWithAuth('/api/automations');
+      if (res.ok) {
+        const data = await res.json();
+        setAutomations(data);
+      }
+    } catch (err) {
+      console.error('Failed to load automations:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadSimulationMode = async () => {
+    try {
+      const res = await fetchWithAuth('/api/automations/simulation-mode');
+      if (res.ok) {
+        const data = await res.json();
+        setSimulationMode(Boolean(data.simulationMode));
+      }
+    } catch (err) {
+      console.warn('Could not check simulation mode:', err);
+    }
+  };
+
+  const toggleSimulationMode = async () => {
+    try {
+      const next = !simulationMode;
+      const res = await fetchWithAuth('/api/automations/simulation-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (res.ok) {
+        setSimulationMode(next);
+        setFeedback({
+          type: 'info',
+          title: next ? 'Simulation Mode Activated' : 'Live Meta Cloud API Mode Active',
+          message: next
+            ? 'Messages will execute immediately with simulated WhatsApp delivery (useful for testing without Meta credentials).'
+            : 'Messages will attempt live delivery through Meta Cloud API (requires valid Phone Number ID & Access Token).',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to toggle simulation mode:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadAutomations();
+    loadSimulationMode();
+  }, []);
+
+  const handleCancel = async (id: number) => {
+    if (!window.confirm('Are you sure you want to cancel this scheduled automation?')) {
+      return;
+    }
+
+    setCancellingId(id);
+    try {
+      const res = await fetchWithAuth(`/api/automations/${id}/cancel`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        setFeedback({
+          type: 'info',
+          title: 'Automation Cancelled',
+          message: `Scheduled automation #${id} has been marked as CANCELLED.`,
+        });
+        await loadAutomations();
+      } else {
+        const err = await res.json();
+        setFeedback({
+          type: 'error',
+          title: 'Cancellation Failed',
+          message: err.error || 'Failed to cancel automation',
+        });
+      }
+    } catch (err) {
+      console.error('Cancel error:', err);
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
+  // Immediate single dispatch
+  const handleRunSingle = async (id: number, forceSimulation?: boolean) => {
+    const simulate = forceSimulation !== undefined ? forceSimulation : simulationMode;
+
+    if (!isAccountConfigured && !simulate) {
+      const auto = automations.find((a) => a.id === id);
+      setMissingCredsModal({
+        automationId: id,
+        contactName: auto?.contactName || 'Recipient',
+        contactPhone: auto?.contactPhone || '',
+      });
+      return;
+    }
+
+    setRunningId(id);
+    setFeedback(null);
+    try {
+      const res = await fetchWithAuth(`/api/automations/${id}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulate }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (data.successCount > 0) {
+          setFeedback({
+            type: simulate ? 'info' : 'success',
+            title: simulate ? 'Sandbox Simulation Executed' : 'Delivered to Meta Cloud API',
+            message: simulate
+              ? `Automation #${id} ran in Sandbox Mode. NOTE: No real message was sent to the phone because Meta API credentials are not configured.`
+              : `Automation #${id} successfully dispatched to Meta WhatsApp Cloud API!`,
+          });
+        } else if (data.failureCount > 0) {
+          const detail = data.details?.[0]?.error || 'WhatsApp Business API credentials not configured.';
+          setFeedback({
+            type: 'error',
+            title: 'Message Execution Failed',
+            message: detail,
+          });
+        }
+        await loadAutomations();
+      } else {
+        setFeedback({
+          type: 'error',
+          title: 'Execution Error',
+          message: data.error || 'Failed to dispatch automation.',
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        title: 'Network Error',
+        message: err?.message || 'Error communicating with server.',
+      });
+    } finally {
+      setRunningId(null);
+    }
+  };
+
+  const handleRunQueueNow = async () => {
+    setFeedback(null);
+    const result = await onRunWorkerNow({ forceAll: true, simulate: simulationMode });
+    await loadAutomations();
+
+    if (result) {
+      if (result.processed === 0) {
+        setFeedback({
+          type: 'info',
+          title: 'Queue Checked',
+          message: 'No automations were due for execution. Use "Send Now" on any row to dispatch immediately.',
+        });
+      } else if (result.successCount > 0 && result.failureCount === 0) {
+        setFeedback({
+          type: 'success',
+          title: 'Queue Executed Successfully',
+          message: `Processed ${result.processed} automation(s). All sent successfully!`,
+        });
+      } else if (result.failureCount > 0) {
+        const firstError = result.details?.[0]?.error || 'Credentials not configured';
+        setFeedback({
+          type: 'warning',
+          title: `Queue Processed: ${result.failureCount} Failed, ${result.successCount} Sent`,
+          message: `${firstError}. Configure credentials in WhatsApp Settings or enable Simulation Mode.`,
+        });
+      }
+    }
+  };
+
+  const handleViewDetails = async (id: number) => {
+    setDetailLoading(true);
+    try {
+      const res = await fetchWithAuth(`/api/automations/${id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedItem(data);
+      }
+    } catch (err) {
+      console.error('Failed to load automation detail:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'SCHEDULED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+            <Clock className="w-3 h-3" /> SCHEDULED
+          </span>
+        );
+      case 'PROCESSING':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-300 border border-blue-500/30 animate-pulse">
+===== src/components/TemplatesView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { MessageTemplate } from '../types.ts';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Sparkles,
+  Layers,
+  AlertCircle,
+  FileText,
+} from 'lucide-react';
+
+export const TemplatesView: React.FC = () => {
+  const { fetchWithAuth } = useAuth();
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const loadTemplates = async () => {
+    setLoading(true);
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/templates');
+      if (res.ok) {
+        const data = await res.json();
+        setTemplates(data);
+      }
+    } catch (err) {
+      console.error('Failed to load templates:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTemplates();
+  }, []);
+
+  const handleSyncTemplates = async () => {
+    setSyncing(true);
+    setNotification(null);
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/templates/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to sync templates from Meta');
+      }
+      setNotification({ type: 'success', text: data.message || 'Templates synced successfully from Meta!' });
+      await loadTemplates();
+    } catch (err: any) {
+      setNotification({
+        type: 'error',
+        text: `${err.message}. If you do not have live templates on Meta yet, you can click "Load Approved Starter Templates" below.`,
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleSeedStarterTemplates = async () => {
+    setSeeding(true);
+    setNotification(null);
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/templates/seed-defaults', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setNotification({ type: 'success', text: 'Approved starter templates loaded successfully.' });
+      await loadTemplates();
+    } catch (err: any) {
+      setNotification({ type: 'error', text: err.message || 'Failed to load starter templates' });
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const getBodyText = (components: any[]) => {
+    if (!Array.isArray(components)) return '';
+    const body = components.find((c) => c && c.type === 'BODY');
+    return body?.text || '';
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-white tracking-tight">WhatsApp Message Templates</h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            Displaying official Meta templates. Only <span className="text-emerald-400 font-medium">APPROVED</span> templates can be scheduled for business-initiated conversations.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <button
+            id="seed-templates-button"
+            onClick={handleSeedStarterTemplates}
+            disabled={seeding}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition cursor-pointer disabled:opacity-50"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>Load Starter Templates</span>
+          </button>
+          <button
+            id="sync-templates-button"
+            onClick={handleSyncTemplates}
+            disabled={syncing}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition cursor-pointer shadow-md shadow-emerald-950/40 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            <span>{syncing ? 'Syncing with Meta...' : 'Sync Templates'}</span>
+          </button>
+        </div>
+      </div>
+
+      {notification && (
+        <div
+          className={`p-4 rounded-xl text-xs flex items-start gap-3 border ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+              : 'bg-rose-950/40 border-rose-800 text-rose-300'
+          }`}
+        >
+          {notification.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+          ) : (
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+          )}
+          <span>{notification.text}</span>
+        </div>
+      )}
+
+      {/* Meta WhatsApp Template Explainer Notice */}
+      <div className="rounded-2xl border border-sky-500/20 bg-sky-950/30 p-4 text-xs text-sky-200/90 flex items-start gap-3.5">
+        <div className="p-2 rounded-xl bg-sky-500/20 text-sky-300 shrink-0 mt-0.5">
+          <Sparkles className="w-4 h-4" />
+        </div>
+        <div className="space-y-1.5 leading-relaxed">
+          <div className="font-semibold text-white text-sm">Meta WhatsApp Template Rules & Auto-Fallback</div>
+          <p className="text-slate-300">
+            WhatsApp Business Cloud API requires outbound messages outside the 24-hour service window to use a registered template.
+            Meta provides <span className="font-mono text-emerald-300 font-semibold bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/60">hello_world</span> (en_US) as the universal pre-approved template that functions immediately without needing manual review.
+          </p>
+          <p className="text-slate-400 text-[11px]">
+            Custom template names (e.g. <code className="text-amber-300">happy_birthday_wishes</code>) produce Meta Error <strong>#132001 (Template does not exist in translation)</strong> if they are not yet created in your Meta account. Our background worker automatically falls back to <strong className="text-white">hello_world</strong> if a custom template is missing on Meta. To register custom templates with your exact wording, create them in <a href="https://business.facebook.com/wa/manage/message-templates/" target="_blank" rel="noreferrer" className="text-emerald-400 underline hover:text-emerald-300">Meta WhatsApp Manager</a> and click <strong>Sync Templates</strong>.
+          </p>
+        </div>
+      </div>
+
+      {/* Templates List */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase bg-slate-900/80">
+                <th className="py-3 px-4 font-medium">Template Name</th>
+                <th className="py-3 px-4 font-medium">Language</th>
+                <th className="py-3 px-4 font-medium">Category</th>
+                <th className="py-3 px-4 font-medium">Status</th>
+                <th className="py-3 px-4 font-medium">Preview & Variables</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {templates.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-12 text-center text-slate-500 text-sm">
+                    {loading ? (
+                      'Loading templates from database...'
+                    ) : (
+                      <div className="space-y-3">
+                        <FileText className="w-8 h-8 mx-auto text-slate-600" />
+                        <p>No message templates found.</p>
+                        <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                          Click <strong>Sync Templates</strong> to pull templates approved in Meta WhatsApp Business Manager, or click <strong>Load Starter Templates</strong> to seed standard templates.
+                        </p>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ) : (
+                templates.map((tpl) => {
+                  const isApproved = tpl.status === 'APPROVED';
+                  const isDefaultHelloWorld = tpl.name === 'hello_world';
+                  const bodyText = getBodyText(tpl.components);
+
+                  return (
+                    <tr key={tpl.id} className="hover:bg-slate-800/40 transition">
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-sm font-semibold text-white">{tpl.name}</span>
+                          {isDefaultHelloWorld ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold tracking-wide">
+                              WhatsApp Built-in Pre-Approved
+                            </span>
+                          ) : isApproved ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium tracking-wide">
+                              Meta Approved
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium tracking-wide">
+                              Needs Meta Approval
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono">ID: {tpl.metaTemplateId || `#${tpl.id}`}</div>
+                      </td>
+                      <td className="py-3.5 px-4 font-mono text-xs text-slate-300">
+                        {tpl.language}
+                      </td>
+                      <td className="py-3.5 px-4 text-xs">
+                        <span className="px-2.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-medium">
+                          {tpl.category}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                            isApproved
+                              ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                              : tpl.status === 'REJECTED'
+                              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                              : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                          }`}
+                        >
+                          {isApproved ? (
+                            <CheckCircle2 className="w-3 h-3" />
+                          ) : tpl.status === 'REJECTED' ? (
+                            <XCircle className="w-3 h-3" />
+                          ) : (
+                            <Clock className="w-3 h-3" />
+                          )}
+                          {tpl.status}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 max-w-md">
+                        <div className="text-xs text-slate-300 bg-slate-950 p-2.5 rounded-xl border border-slate-800 font-mono leading-relaxed break-words">
+                          {bodyText || 'No body text specified'}
+                        </div>
+                        {tpl.variableCount > 0 && (
+                          <div className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
+                            <Layers className="w-3 h-3" />
+                            <span>{tpl.variableCount} parameter variable(s) required</span>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+===== src/components/WhatsAppSettingsView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { WhatsAppAccountSettings } from '../types.ts';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  ShieldCheck,
+  Save,
+  CheckCircle2,
+  AlertCircle,
+  HelpCircle,
+  Copy,
+  ExternalLink,
+  Lock,
+  RefreshCw,
+} from 'lucide-react';
+
+interface WhatsAppSettingsViewProps {
+  onSettingsUpdated: () => void;
+}
+
+export const WhatsAppSettingsView: React.FC<WhatsAppSettingsViewProps> = ({ onSettingsUpdated }) => {
+  const { fetchWithAuth } = useAuth();
+  const [settings, setSettings] = useState<WhatsAppAccountSettings>({
+    configured: false,
+    metaAppId: '',
+    metaAppSecretMasked: '',
+    businessAccountId: '',
+    phoneNumberId: '',
+    accessTokenMasked: '',
+    webhookVerifyToken: 'wa_verify_secret',
+    apiVersion: 'v21.0',
+    status: 'DISCONNECTED',
+  });
+
+  // Inputs for editing credentials
+  const [metaAppId, setMetaAppId] = useState('');
+  const [metaAppSecret, setMetaAppSecret] = useState('');
+  const [businessAccountId, setBusinessAccountId] = useState('');
+  const [phoneNumberId, setPhoneNumberId] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [webhookVerifyToken, setWebhookVerifyToken] = useState('wa_verify_secret');
+  const [apiVersion, setApiVersion] = useState('v21.0');
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
+  const webhookCallbackUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/webhooks/whatsapp` : '/api/webhooks/whatsapp';
+
+  const loadSettings = async () => {
+    setLoading(true);
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/account');
+      if (res.ok) {
+        const data = await res.json();
+        setSettings(data);
+        setMetaAppId(data.metaAppId || '');
+        setBusinessAccountId(data.businessAccountId || '');
+        setPhoneNumberId(data.phoneNumberId || '');
+        setWebhookVerifyToken(data.webhookVerifyToken || 'wa_verify_secret');
+        setApiVersion(data.apiVersion || 'v21.0');
+        // Secrets are not exposed; set placeholders if already configured
+        setMetaAppSecret(data.metaAppSecretMasked || '');
+        setAccessToken(data.accessTokenMasked || '');
+      }
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setStatusMessage(null);
+
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/account', {
+        method: 'POST',
+        body: JSON.stringify({
+          metaAppId,
+          metaAppSecret,
+          businessAccountId,
+          phoneNumberId,
+          accessToken,
+          webhookVerifyToken,
+          apiVersion,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save configuration');
+      }
+
+      setStatusMessage({ type: 'success', text: 'Settings saved securely. Credentials encrypted in database.' });
+      await loadSettings();
+      onSettingsUpdated();
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Error saving settings' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setStatusMessage(null);
+
+    try {
+      const res = await fetchWithAuth('/api/whatsapp/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phoneNumberId: phoneNumberId.trim(),
+          accessToken: accessToken.trim(),
+          apiVersion: apiVersion.trim(),
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Connection test failed. Please verify your Meta credentials.');
+      }
+
+      setStatusMessage({
+        type: 'success',
+        text: `Success! Connected to Meta Cloud API: ${data.verifiedName || 'WhatsApp Business Account'} (${data.phoneNumber || phoneNumberId})`,
+      });
+      await loadSettings();
+      onSettingsUpdated();
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: `Connection test failed: ${err.message}`,
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const copyWebhookUrl = () => {
+    navigator.clipboard.writeText(webhookCallbackUrl);
+    setCopiedWebhook(true);
+    setTimeout(() => setCopiedWebhook(false), 2500);
+  };
+
+  const handleLoadSandboxPreset = () => {
+    setMetaAppId('108927492019482');
+    setBusinessAccountId('102938475610293');
+    setPhoneNumberId('105938402948291');
+    setAccessToken('EAAG_DEMO_WHATSAPP_SYSTEM_USER_TOKEN_PREVIEW');
+    setWebhookVerifyToken('wa_verify_secret');
+    setApiVersion('v21.0');
+    setStatusMessage({
+      type: 'success',
+      text: 'Loaded Meta Sandbox demo credentials. Click "Save Configuration" to apply or replace with your production Meta keys.',
+    });
+  };
+
+  return (
+    <div className="max-w-4xl space-y-8">
+      <div>
+        <h1 className="text-xl font-semibold text-white tracking-tight">WhatsApp Cloud API Settings</h1>
+        <p className="text-sm text-slate-400 mt-0.5">
+          Configure credentials from the Meta App Dashboard (WhatsApp Business Platform).
+        </p>
+      </div>
+
+      {settings.hasToken && (
+        <div className={`p-4 rounded-xl text-sm border flex items-start gap-3 ${
+          settings.configured
+            ? 'bg-emerald-950/30 border-emerald-800 text-emerald-200'
+            : 'bg-amber-950/30 border-amber-800 text-amber-200'
+        }`}>
+          <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-emerald-400" />
+          <div className="space-y-1">
+            <p className="font-medium text-white">
+              Permanent Access Token detected from {settings.tokenSource || '.env'}
+            </p>
+            <p className="text-xs text-slate-300">
+              {settings.configured
+                ? 'Your WhatsApp Cloud API credentials are fully configured and active. Scheduled automations will send automatically on time.'
+                : 'Permanent Access Token is loaded. Please enter your WhatsApp Phone Number ID below and click "Save Configuration" to enable automatic messaging.'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {statusMessage && (
+        <div
+          className={`p-4 rounded-xl text-sm flex items-start gap-3 border ${
+            statusMessage.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+              : 'bg-rose-950/40 border-rose-800 text-rose-300'
+          }`}
+        >
+          {statusMessage.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-emerald-400" />
+          ) : (
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-rose-400" />
+          )}
+          <span>{statusMessage.text}</span>
+        </div>
+      )}
+
+      <form onSubmit={handleSave} className="space-y-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="flex items-center gap-2 text-white font-medium">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" />
+              <span>Meta WhatsApp Business Account Credentials</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleLoadSandboxPreset}
+                className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-medium transition cursor-pointer"
+              >
+                Auto-Fill Meta Sandbox Preset
+              </button>
+              <span className="text-xs font-mono text-slate-500 flex items-center gap-1">
+                <Lock className="w-3.5 h-3.5 text-emerald-400" /> Masked & Secure
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Meta App ID */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <span>Meta App ID</span>
+                <span className="text-slate-500 text-[11px]">(Optional)</span>
+              </label>
+              <input
+                id="meta-app-id-input"
+                type="text"
+                value={metaAppId}
+                onChange={(e) => setMetaAppId(e.target.value)}
+                placeholder="e.g. 109283746592837"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono transition"
+              />
+            </div>
+
+            {/* Meta App Secret */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <span>Meta App Secret</span>
+                <span className="text-slate-500 text-[11px]">(Optional)</span>
+              </label>
+              <input
+                id="meta-app-secret-input"
+===== src/server/credentials.ts =====
+import fs from 'fs';
+import path from 'path';
+import * as dotenv from 'dotenv';
+import { db, isDatabaseConnected } from '../db/index.ts';
+import { whatsappAccounts } from '../db/schema.ts';
+import { localStore, LocalWhatsAppAccount } from '../db/localStore.ts';
+
+export interface ResolvedWhatsAppCredentials {
+  phoneNumberId: string;
+  accessToken: string;
+  businessAccountId: string;
+  metaAppId: string;
+  metaAppSecret: string;
+  webhookVerifyToken: string;
+  apiVersion: string;
+  status: 'CONNECTED' | 'DISCONNECTED';
+  hasToken: boolean;
+  hasPhoneId: boolean;
+  isFullyConfigured: boolean;
+  tokenSource: 'env' | 'database' | 'localStore' | 'none';
+  phoneIdSource: 'env' | 'database' | 'localStore' | 'none';
+  errorNotes?: string;
+}
+
+/**
+ * Reads and parses all .env files dynamically from disk.
+ * This guarantees that when a user creates or edits .env at runtime,
+ * the new credentials are immediately detected without restarting Node.
+ */
+function readEnvFilesFromDisk(): Record<string, string> {
+  const envVars: Record<string, string> = {};
+  const rootDir = process.cwd();
+  const fileCandidates = ['.env', '.env.local', '.env.development', '.env.production'];
+
+  for (const file of fileCandidates) {
+    const fullPath = path.join(rootDir, file);
+    if (fs.existsSync(fullPath)) {
+      try {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const parsed = dotenv.parse(content);
+        Object.assign(envVars, parsed);
+      } catch (err: any) {
+        console.warn(`[Credentials] Notice reading ${file}:`, err?.message);
+      }
+    }
+  }
+
+  return envVars;
+}
+
+/**
+ * Extracts a value checking both process.env and disk .env files against multiple key aliases.
+ */
+function getFirstMatch(diskEnv: Record<string, string>, aliases: string[]): { value: string; fromDisk: boolean } {
+  // 1. Check process.env first
+  for (const alias of aliases) {
+    const val = process.env[alias];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      return { value: String(val).trim().replace(/['"]/g, ''), fromDisk: false };
+    }
+  }
+
+  // 2. Check disk .env files
+  for (const alias of aliases) {
+    const val = diskEnv[alias];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      return { value: String(val).trim().replace(/['"]/g, ''), fromDisk: true };
+    }
+  }
+
+  return { value: '', fromDisk: false };
+}
+
+const TOKEN_ALIASES = [
+  'META_ACCESS_TOKEN',
+  'WHATSAPP_ACCESS_TOKEN',
+  'PERMANENT_ACCESS_TOKEN',
+  'WHATSAPP_PERMANENT_ACCESS_TOKEN',
+  'META_PERMANENT_ACCESS_TOKEN',
+  'PERMANENT_ACCESS_CODE',
+  'WHATSAPP_PERMANENT_ACCESS_CODE',
+  'META_PERMANENT_ACCESS_CODE',
+  'ACCESS_TOKEN',
+  'WHATSAPP_TOKEN',
+  'META_TOKEN',
+  'SYSTEM_USER_TOKEN',
+  'META_SYSTEM_USER_TOKEN',
+  'WHATSAPP_SYSTEM_USER_TOKEN',
+];
+
+const PHONE_ID_ALIASES = [
+  'META_PHONE_NUMBER_ID',
+  'WHATSAPP_PHONE_NUMBER_ID',
+  'PHONE_NUMBER_ID',
+  'WHATSAPP_PHONE_ID',
+  'META_PHONE_ID',
+];
+
+const WABA_ID_ALIASES = [
+  'META_BUSINESS_ACCOUNT_ID',
+  'WHATSAPP_BUSINESS_ACCOUNT_ID',
+  'BUSINESS_ACCOUNT_ID',
+  'WHATSAPP_WABA_ID',
+  'META_WABA_ID',
+  'WABA_ID',
+];
+
+const APP_ID_ALIASES = ['META_APP_ID', 'WHATSAPP_APP_ID', 'APP_ID'];
+const APP_SECRET_ALIASES = ['META_APP_SECRET', 'WHATSAPP_APP_SECRET', 'APP_SECRET'];
+const VERIFY_TOKEN_ALIASES = ['META_VERIFY_TOKEN', 'WHATSAPP_VERIFY_TOKEN', 'WEBHOOK_VERIFY_TOKEN'];
+
+/**
+ * Centrally resolves WhatsApp credentials by combining environment variables (.env files),
+ * database records, and local in-memory store.
+ */
+export async function resolveWhatsAppCredentials(): Promise<ResolvedWhatsAppCredentials> {
+  const diskEnv = readEnvFilesFromDisk();
+
+  // 1. Env detection
+  const envTokenMatch = getFirstMatch(diskEnv, TOKEN_ALIASES);
+  const envPhoneIdMatch = getFirstMatch(diskEnv, PHONE_ID_ALIASES);
+  const envWabaIdMatch = getFirstMatch(diskEnv, WABA_ID_ALIASES);
+  const envAppIdMatch = getFirstMatch(diskEnv, APP_ID_ALIASES);
+  const envAppSecretMatch = getFirstMatch(diskEnv, APP_SECRET_ALIASES);
+  const envVerifyTokenMatch = getFirstMatch(diskEnv, VERIFY_TOKEN_ALIASES);
+
+  // 2. Database detection
+  let dbAcc: any = null;
+  if (isDatabaseConnected) {
+    try {
+      const accounts = await db.select().from(whatsappAccounts).limit(1);
+      dbAcc = accounts[0] || null;
+    } catch (err: any) {
+      // Quiet notice
+    }
+  }
+
+  // 3. Local store detection
+  const localAcc = localStore.account;
+
+  // Resolve Access Token
+  let accessToken = '';
+  let tokenSource: 'env' | 'database' | 'localStore' | 'none' = 'none';
+
+  if (envTokenMatch.value) {
+    accessToken = envTokenMatch.value;
+    tokenSource = 'env';
+  } else if (dbAcc?.accessToken) {
+    accessToken = dbAcc.accessToken;
+    tokenSource = 'database';
+  } else if (localAcc?.accessToken) {
+    accessToken = localAcc.accessToken;
+    tokenSource = 'localStore';
+  }
+
+  // Resolve Phone Number ID
+  let phoneNumberId = '';
+  let phoneIdSource: 'env' | 'database' | 'localStore' | 'none' = 'none';
+
+  if (envPhoneIdMatch.value) {
+    phoneNumberId = envPhoneIdMatch.value;
+    phoneIdSource = 'env';
+  } else if (dbAcc?.phoneNumberId) {
+    phoneNumberId = dbAcc.phoneNumberId;
+    phoneIdSource = 'database';
+  } else if (localAcc?.phoneNumberId) {
+    phoneNumberId = localAcc.phoneNumberId;
+    phoneIdSource = 'localStore';
+  }
+
+  // Resolve Business Account ID
+  const businessAccountId =
+    envWabaIdMatch.value || dbAcc?.businessAccountId || localAcc?.businessAccountId || '';
+
+  // Resolve App ID & Secret
+  const metaAppId = envAppIdMatch.value || dbAcc?.metaAppId || localAcc?.metaAppId || '';
+  const metaAppSecret = envAppSecretMatch.value || dbAcc?.metaAppSecret || localAcc?.metaAppSecret || '';
+  const webhookVerifyToken =
+    envVerifyTokenMatch.value || dbAcc?.webhookVerifyToken || localAcc?.webhookVerifyToken || 'wa_verify_secret';
+  const apiVersion = dbAcc?.apiVersion || localAcc?.apiVersion || 'v21.0';
+
+  const hasToken = Boolean(accessToken && accessToken.length > 5);
+  const hasPhoneId = Boolean(phoneNumberId && phoneNumberId.length > 3);
+  const isFullyConfigured = hasToken && hasPhoneId;
+
+  let errorNotes: string | undefined = undefined;
+  if (!hasToken && !hasPhoneId) {
+    errorNotes = 'WhatsApp credentials not configured. Provide Phone Number ID and Access Token.';
+  } else if (hasToken && !hasPhoneId) {
+    errorNotes =
+      'Access token detected from environment (.env), but Phone Number ID is missing. Add META_PHONE_NUMBER_ID in .env or enter it in WhatsApp Settings.';
+  } else if (!hasToken && hasPhoneId) {
+    errorNotes = 'Phone Number ID is configured, but Access Token is missing. Add META_ACCESS_TOKEN in .env or in WhatsApp Settings.';
+  }
+
+  // Keep localStore in sync with resolved credentials so worker can access them instantly
+  if (isFullyConfigured || hasToken || hasPhoneId) {
+    if (!localStore.account) {
+      localStore.account = {
+        id: 1,
+        metaAppId,
+        metaAppSecret,
+        businessAccountId,
+        phoneNumberId,
+        accessToken,
+        webhookVerifyToken,
+        apiVersion,
+        displayPhoneNumber: dbAcc?.displayPhoneNumber || null,
+        verifiedName: dbAcc?.verifiedName || (isFullyConfigured ? 'WhatsApp Business Account' : null),
+        qualityRating: dbAcc?.qualityRating || (isFullyConfigured ? 'GREEN' : null),
+        status: isFullyConfigured ? 'CONNECTED' : 'DISCONNECTED',
+        lastTestedAt: dbAcc?.lastTestedAt || null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    } else {
+      if (accessToken && (!localStore.account.accessToken || tokenSource === 'env')) {
+        localStore.account.accessToken = accessToken;
+      }
+      if (phoneNumberId && (!localStore.account.phoneNumberId || phoneIdSource === 'env')) {
+        localStore.account.phoneNumberId = phoneNumberId;
+      }
+      if (businessAccountId && !localStore.account.businessAccountId) {
+        localStore.account.businessAccountId = businessAccountId;
+      }
+      if (isFullyConfigured) {
+        localStore.account.status = 'CONNECTED';
+      }
+    }
+  }
+
+  return {
+    phoneNumberId,
+    accessToken,
+    businessAccountId,
+    metaAppId,
+    metaAppSecret,
+    webhookVerifyToken,
+    apiVersion,
+    status: isFullyConfigured ? 'CONNECTED' : 'DISCONNECTED',
+    hasToken,
+    hasPhoneId,
+    isFullyConfigured,
+    tokenSource,
+    phoneIdSource,
+    errorNotes,
+  };
+}
+
+/**
+ * Saves or updates WhatsApp credentials in .env file on disk.
+ * This guarantees persistence across server restarts even if PostgreSQL is offline.
+ */
+export function saveCredentialsToEnvFile(updates: {
+  phoneNumberId?: string;
+  accessToken?: string;
+  businessAccountId?: string;
+  metaAppId?: string;
+  metaAppSecret?: string;
+  webhookVerifyToken?: string;
+===== src/server/whatsapp.ts =====
+/**
+ * Official Meta WhatsApp Business Cloud API Integration Service
+ * Follows Graph API v21.0 standards
+ */
+
+export interface MetaSendTemplateParams {
+  phoneNumberId: string;
+  accessToken: string;
+  apiVersion?: string;
+  recipientPhone: string; // E.164 format without + or spaces e.g. "919876543210"
+  templateName: string;
+  templateLanguage: string; // e.g. "en_US" or "en"
+  variables: Record<string, string>; // { "1": "Rahul", "2": "Appointment #123" }
+  fallbackToHelloWorldIfNotFound?: boolean; // If custom template does not exist on Meta (#132001), fallback to official hello_world
+}
+
+export interface MetaTestResult {
+  success: boolean;
+  phoneNumber?: string;
+  verifiedName?: string;
+  qualityRating?: string;
+  error?: string;
+}
+
+export interface MetaTemplateComponent {
+  type: string; // BODY, HEADER, FOOTER, BUTTONS
+  format?: string;
+  text?: string;
+  example?: {
+    body_text?: string[][];
+  };
+}
+
+export interface MetaRawTemplate {
+  id: string;
+  name: string;
+  language: string;
+  category: string;
+  status: string;
+  components: MetaTemplateComponent[];
+}
+
+export class WhatsAppService {
+  /**
+   * Cleans and normalizes phone number to WhatsApp recipient format (digits only, no + or spaces)
+   */
+  static normalizePhoneForWhatsApp(phone: string): string {
+    return (phone || '').replace(/[^0-9]/g, '');
+  }
+
+  /**
+   * Automatically discovers the WhatsApp Business Account (WABA) ID linked to a given Phone Number ID.
+   */
+  static async autoDiscoverBusinessAccountId(
+    phoneNumberId: string,
+    accessToken: string,
+    apiVersion: string = 'v21.0'
+  ): Promise<string | null> {
+    try {
+      const cleanPhoneId = (phoneNumberId || '').trim().replace(/['"]/g, '');
+      const cleanToken = (accessToken || '').trim().replace(/['"]/g, '');
+      const cleanVersion = (apiVersion || 'v21.0').trim().replace(/['"]/g, '') || 'v21.0';
+
+      if (!cleanPhoneId || !cleanToken) return null;
+
+      const url = `https://graph.facebook.com/${cleanVersion}/${encodeURIComponent(cleanPhoneId)}?fields=whatsapp_business_account`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${cleanToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.whatsapp_business_account?.id || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Translates common Meta API errors into clear, actionable developer guidance
+   */
+  static formatMetaErrorMessage(errorObj: any, status: number): { message: string; code: string } {
+    const errCode = errorObj?.code ? String(errorObj.code) : String(status);
+    let errMsg = errorObj?.error_user_msg || errorObj?.message || `Meta API error (${status})`;
+    if (errorObj?.error_data?.details) {
+      errMsg += ` (${errorObj.error_data.details})`;
+    }
+
+    if (errCode === '131030' || errMsg.includes('131030') || errMsg.toLowerCase().includes('not in allowed list')) {
+      errMsg = `Recipient not in allowed list (Meta Error #131030): Your Meta App is in Development / Test Mode. Meta only permits messages to verified test numbers. To fix: In Meta Developer Dashboard -> WhatsApp -> API Setup, find the "To" recipient dropdown, click "Manage phone number list", add the recipient's phone number, and verify with OTP. (To message anyone without whitelisting, switch your Meta App to Live Mode).`;
+    } else if (errCode === '132001' || errMsg.includes('132001') || errMsg.toLowerCase().includes('does not exist in the translation')) {
+      errMsg = `Template Not Found in WhatsApp (#132001): The template is not created or approved in your Meta WhatsApp Business Account for this language. "hello_world" (en_US) is WhatsApp's only built-in pre-approved template that works out-of-the-box. To use other template names, create and approve them in Meta WhatsApp Manager, or use "hello_world".`;
+    } else if (errCode === '131026' || errMsg.includes('Message undeliverable')) {
+      errMsg = `Message Undeliverable (#131026): The recipient number might not have WhatsApp installed, or 24 hours have passed since customer interaction. Use an APPROVED template message for customer-initiated conversations.`;
+    } else if (errCode === '190' || errMsg.includes('OAuth') || errMsg.includes('access token')) {
+      errMsg = `Access Token Expired or Invalid (#190): Please check your System User Permanent Access Token in WhatsApp Settings.`;
+    }
+
+    return { message: errMsg, code: errCode };
+  }
+
+  /**
+   * Sends a custom text message via Meta WhatsApp Business Cloud API
+   */
+  static async sendTextMessage(params: {
+    phoneNumberId: string;
+    accessToken: string;
+    apiVersion?: string;
+    recipientPhone: string;
+    text: string;
+  }): Promise<{
+    success: boolean;
+    whatsappMessageId?: string;
+    rawResponse?: any;
+    error?: string;
+    errorCode?: string;
+  }> {
+    const {
+      phoneNumberId,
+      accessToken,
+      apiVersion = 'v21.0',
+      recipientPhone,
+      text,
+    } = params;
+
+    const normalizedRecipient = this.normalizePhoneForWhatsApp(recipientPhone);
+    if (!normalizedRecipient || normalizedRecipient.length < 8) {
+      return {
+        success: false,
+        error: 'Invalid recipient phone number. Must include country code without + or spaces (e.g., 919876543210).',
+      };
+    }
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: normalizedRecipient,
+      type: 'text',
+      text: {
+        preview_url: false,
+        body: text,
+      },
+    };
+
+    try {
+      const url = `https://graph.facebook.com/${apiVersion}/${encodeURIComponent(phoneNumberId)}/messages`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        const { message: errMsg, code: errCode } = this.formatMetaErrorMessage(data.error, response.status);
+        return {
+          success: false,
+          error: errMsg,
+          errorCode: errCode,
+          rawResponse: data,
+        };
+      }
+
+      const messageId = data.messages?.[0]?.id;
+      return {
+        success: true,
+        whatsappMessageId: messageId,
+        rawResponse: data,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Network error executing Meta WhatsApp API call',
+      };
+    }
+  }
+
+  /**
+   * Tests the Meta WhatsApp Business API connection by querying the phone number details
+   */
+  static async testConnection(
+    phoneNumberId: string,
+    accessToken: string,
+    apiVersion: string = 'v21.0'
+  ): Promise<MetaTestResult> {
+    try {
+      const cleanPhoneId = (phoneNumberId || '').trim().replace(/['"]/g, '');
+      const cleanToken = (accessToken || '').trim().replace(/['"]/g, '');
+      const cleanVersion = (apiVersion || 'v21.0').trim().replace(/['"]/g, '') || 'v21.0';
+
+      if (!cleanPhoneId || !cleanToken) {
+        return {
+          success: false,
+          error: 'Phone Number ID and Access Token must not be empty.',
+        };
+      }
+
+      const url = `https://graph.facebook.com/${cleanVersion}/${encodeURIComponent(cleanPhoneId)}?fields=verified_name,display_phone_number,quality_rating,code_verification_status`;
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${cleanToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const text = await response.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          success: false,
+          error: `Meta Graph API returned an unexpected response (HTTP ${response.status}): ${text.slice(0, 150)}`,
+        };
+      }
+
+      if (!response.ok || data.error) {
+        const metaError = data.error;
+        let errorMsg = metaError?.message || `Meta API error (HTTP ${response.status})`;
+        if (metaError?.error_user_msg) {
+          errorMsg = `${errorMsg} - ${metaError.error_user_msg}`;
+        }
+        return {
+          success: false,
+          error: errorMsg,
+        };
+      }
+
+      return {
+        success: true,
+        phoneNumber: data.display_phone_number,
+        verifiedName: data.verified_name,
+        qualityRating: data.quality_rating,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Network error connecting to Meta Graph API',
+      };
+    }
+  }
+
+  /**
+   * Fetches approved message templates for the WhatsApp Business Account (WABA)
+   */
+  static async fetchTemplates(
+    businessAccountId: string,
+    accessToken: string,
+    apiVersion: string = 'v21.0'
+  ): Promise<{ success: boolean; templates?: MetaRawTemplate[]; error?: string }> {
+    try {
+      const url = `https://graph.facebook.com/${apiVersion}/${businessAccountId}/message_templates?limit=100`;
+      const response = await fetch(url, {
+===== src/server/wishflow.ts =====
+import { eq, and, desc, isNull, or } from 'drizzle-orm';
+import { db, isDatabaseConnected } from '../db/index.ts';
+import {
+  contacts,
+  automations,
+  messageTemplates,
+  messages,
+  whatsappAccounts,
+} from '../db/schema.ts';
+import { localStore } from '../db/localStore.ts';
+import { WhatsAppService } from './whatsapp.ts';
+import { resolveWhatsAppCredentials } from './credentials.ts';
+import {
+  BirthdaySettings,
+  BirthdayWishContactSummary,
+  BirthdayWishHistoryItem,
+} from '../types.ts';
+
+export class WishflowService {
+  /**
+   * Retrieves the global Birthday WishFlow configuration
+   */
+  static getSettings(): BirthdaySettings {
+    return {
+      enabled: localStore.birthdaySettings.enabled,
+      defaultSendTime: localStore.birthdaySettings.defaultSendTime || '09:00',
+      defaultTemplateId: localStore.birthdaySettings.defaultTemplateId || 1,
+      customMessage:
+        localStore.birthdaySettings.customMessage ||
+        '🎉 Happy Birthday {{name}}! Wishing you a fantastic year filled with happiness, health, and success! 🎂🎈',
+      timezone: localStore.birthdaySettings.timezone || 'Asia/Kolkata',
+    };
+  }
+
+  /**
+   * Updates the global Birthday WishFlow configuration and optionally resyncs
+   */
+  static async updateSettings(
+    newSettings: Partial<BirthdaySettings>
+  ): Promise<BirthdaySettings> {
+    if (newSettings.enabled !== undefined) {
+      localStore.birthdaySettings.enabled = Boolean(newSettings.enabled);
+    }
+    if (newSettings.defaultSendTime) {
+      localStore.birthdaySettings.defaultSendTime = newSettings.defaultSendTime.trim();
+    }
+    if (newSettings.defaultTemplateId) {
+      localStore.birthdaySettings.defaultTemplateId = Number(newSettings.defaultTemplateId);
+    }
+    if (newSettings.customMessage) {
+      localStore.birthdaySettings.customMessage = newSettings.customMessage;
+    }
+    if (newSettings.timezone) {
+      localStore.birthdaySettings.timezone = newSettings.timezone.trim();
+    }
+
+    // Trigger background sync across contacts
+    await this.syncAllContactsBirthdays().catch((err) => {
+      console.warn('[Wishflow] Background sync error after settings update:', err);
+    });
+
+    return this.getSettings();
+  }
+
+  /**
+   * Calculates the exact next birthday Date, target year, turning age, and day distance
+   */
+  static calculateNextBirthday(
+    dobString: string,
+    sendTimeStr: string = '09:00',
+    now: Date = new Date()
+  ): {
+    birthYear: number;
+    birthMonth: number;
+    birthDay: number;
+    targetYear: number;
+    targetDate: Date;
+    ageTurning: number;
+    daysUntilBirthday: number;
+    isToday: boolean;
+    isThisMonth: boolean;
+    formattedNextDate: string;
+  } {
+    const cleanDob = (dobString || '').trim();
+    const parts = cleanDob.split(/[-/]/);
+    const birthYear = parseInt(parts[0], 10) || 1990;
+    const birthMonth = parseInt(parts[1], 10) || 1;
+    const birthDay = parseInt(parts[2], 10) || 1;
+
+    const timeParts = (sendTimeStr || '09:00').split(':');
+    const sendHour = parseInt(timeParts[0], 10) || 9;
+    const sendMinute = parseInt(timeParts[1], 10) || 0;
+
+    const currentYear = now.getFullYear();
+
+    // Check if birthday for current year is today or upcoming
+    // Handle leap year Feb 29 on non-leap years (use Feb 28)
+    const getSafeDate = (year: number, month: number, day: number, hour: number, min: number) => {
+      if (month === 2 && day === 29) {
+        const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+        return new Date(year, 1, isLeap ? 29 : 28, hour, min, 0, 0);
+      }
+      return new Date(year, month - 1, day, hour, min, 0, 0);
+    };
+
+    let targetYear = currentYear;
+    let targetDate = getSafeDate(currentYear, birthMonth, birthDay, sendHour, sendMinute);
+
+    // If today is their birthday date (ignoring time)
+    const isToday = now.getMonth() + 1 === birthMonth && now.getDate() === birthDay;
+    const isThisMonth = now.getMonth() + 1 === birthMonth;
+
+    // If birthday date has already completely passed this calendar year (and is not today)
+    const todayZero = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const thisYearBdayZero = new Date(currentYear, birthMonth - 1, birthDay).getTime();
+
+    if (thisYearBdayZero < todayZero) {
+      // Birthday already occurred earlier this year, target next year
+      targetYear = currentYear + 1;
+      targetDate = getSafeDate(targetYear, birthMonth, birthDay, sendHour, sendMinute);
+    }
+
+    const ageTurning = targetYear - birthYear;
+
+    // Calculate days until birthday
+    const nextBdayZero = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
+    const diffMs = nextBdayZero - todayZero;
+    const daysUntilBirthday = Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+
+    const yyyy = targetDate.getFullYear();
+    const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
+    const dd = String(targetDate.getDate()).padStart(2, '0');
+    const formattedNextDate = `${yyyy}-${mm}-${dd}`;
+
+    return {
+      birthYear,
+      birthMonth,
+      birthDay,
+      targetYear,
+      targetDate,
+      ageTurning,
+      daysUntilBirthday,
+      isToday,
+      isThisMonth,
+      formattedNextDate,
+    };
+  }
+
+  /**
+   * Syncs the scheduled birthday automation for a specific contact.
+   * Prevents duplicate messages for the same contact in the same year.
+   */
+  static async syncContactBirthdayAutomation(contactId: number): Promise<{
+    scheduled: boolean;
+    automationId?: number;
+    message?: string;
+  }> {
+    const settings = this.getSettings();
+
+    // 1. Fetch contact
+    let contact: any = null;
+    if (isDatabaseConnected) {
+      try {
+        const rows = await db.select().from(contacts).where(eq(contacts.id, contactId)).limit(1);
+        contact = rows[0];
+      } catch (err) {
+        // Fallback to local store
+      }
+    }
+    if (!contact) {
+      contact = localStore.contacts.find((c) => c.id === contactId);
+    }
+
+    if (!contact) {
+      return { scheduled: false, message: 'Contact not found' };
+    }
+
+    if (!contact.dob) {
+      return { scheduled: false, message: 'Contact does not have a Date of Birth specified' };
+    }
+
+    // 2. Check if birthday automation is enabled for this contact and globally
+    const isContactEnabled = contact.birthdayAutomationEnabled !== false;
+    if (!settings.enabled || !isContactEnabled) {
+      return { scheduled: false, message: 'Birthday automation is disabled' };
+    }
+
+    // 3. Compute target birthday
+    const bday = this.calculateNextBirthday(contact.dob, settings.defaultSendTime);
+    const targetYear = bday.targetYear;
+    const targetDate = bday.targetDate;
+
+    // 4. Check for existing automation for this contact in the target year to PREVENT DUPLICATES
+    const existing = await this.findExistingBirthdayAutomation(contact.id, targetYear);
+    if (existing) {
+      // If already scheduled, ensure scheduled time is aligned
+      if (existing.status === 'SCHEDULED' || existing.status === 'FAILED') {
+        return {
+          scheduled: true,
+          automationId: existing.id,
+          message: `Birthday wish already scheduled for ${targetYear}`,
+        };
+      }
+      if (existing.status === 'SENT' || existing.status === 'DELIVERED' || existing.status === 'SIMULATED') {
+        return {
+          scheduled: false,
+          automationId: existing.id,
+          message: `Birthday wish already completed for ${targetYear}`,
+        };
+      }
+    }
+
+    // 5. Build template variables & message
+    const personalizedMessage = settings.customMessage
+      .replace(/{{name}}/g, contact.name)
+      .replace(/{{age}}/g, String(bday.ageTurning));
+
+    const templateVariables: Record<string, string> = {
+      '1': contact.name,
+      '2': String(bday.ageTurning),
+      _isBirthday: 'true',
+      _birthdayYear: String(targetYear),
+      _contactName: contact.name,
+      _customMessage: personalizedMessage,
+    };
+
+    // 6. Schedule automation using the existing scheduler table/store
+    const effectiveTemplateId = settings.defaultTemplateId || 1;
+
+    if (isDatabaseConnected) {
+      try {
+        const inserted = await db
+          .insert(automations)
+          .values({
+            contactId: contact.id,
+            templateId: effectiveTemplateId,
+            variables: templateVariables,
+            scheduledAt: targetDate,
+            timezone: settings.timezone,
+            status: 'SCHEDULED',
+          })
+          .returning();
+
+        const newId = inserted[0]?.id;
+        console.log(`[Wishflow] Scheduled birthday wish for ${contact.name} on ${targetDate.toISOString()} (Year: ${targetYear}, ID: ${newId})`);
+        return { scheduled: true, automationId: newId, message: 'Scheduled successfully' };
+      } catch (err: any) {
+        console.warn('[Wishflow] Failed to insert into PostgreSQL, inserting into localStore:', err.message);
+      }
+    }
+
+    // LocalStore insert
+    const newId = localStore.nextAutomationId++;
+    localStore.automations.push({
+      id: newId,
+      contactId: contact.id,
+      templateId: effectiveTemplateId,
+      variables: templateVariables,
+      scheduledAt: targetDate,
+      timezone: settings.timezone,
+===== src/server/worker.ts =====
+import { and, eq, lte, isNull, or } from 'drizzle-orm';
+import { db, isDatabaseConnected } from '../db/index.ts';
+import {
+  automations,
+  contacts,
+  messageTemplates,
+  messages,
+  automationExecutions,
+  whatsappAccounts,
+} from '../db/schema.ts';
+import { localStore } from '../db/localStore.ts';
+import { WhatsAppService } from './whatsapp.ts';
+import { resolveWhatsAppCredentials } from './credentials.ts';
+import { WishflowService } from './wishflow.ts';
+
+export interface WorkerRunResult {
+  processed: number;
+  successCount: number;
+  failureCount: number;
+  message?: string;
+  details?: Array<{
+    id: number;
+    contactName: string;
+    status: string;
+    error?: string;
+  }>;
+}
+
+class AutomationWorker {
+  private isProcessing = false;
+  private intervalTimer: NodeJS.Timeout | null = null;
+  private pollIntervalMs = 5000; // Check every 5 seconds
+  private lastWarningLogged = 0;
+
+  start() {
+    if (this.intervalTimer) return;
+    console.log('[Worker] Starting scheduled WhatsApp automation worker...');
+
+    // Run initial check after short delay
+    setTimeout(() => {
+      this.tick();
+    }, 2000);
+
+    this.intervalTimer = setInterval(() => {
+      this.tick();
+    }, this.pollIntervalMs);
+  }
+
+  stop() {
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer);
+      this.intervalTimer = null;
+    }
+    console.log('[Worker] Stopped WhatsApp automation worker');
+  }
+
+  async triggerNow(options?: { forceId?: number; forceAll?: boolean; simulate?: boolean }): Promise<WorkerRunResult> {
+    return await this.processDueAutomations(options);
+  }
+
+  private async tick() {
+    if (this.isProcessing) return;
+
+    try {
+      this.isProcessing = true;
+      await this.processDueAutomations();
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (
+        msg.includes('SASL') ||
+        msg.includes('password') ||
+        msg.includes('client password') ||
+        msg.includes('ECONNREFUSED') ||
+        err?.code === '28P01'
+      ) {
+        const now = Date.now();
+        if (now - this.lastWarningLogged > 60000) {
+          console.warn('[Worker] PostgreSQL offline. Using local resilient store for automations.');
+          this.lastWarningLogged = now;
+        }
+        return;
+      }
+      console.error('[Worker] Error in automation worker tick:', msg);
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  private async processDueAutomations(options?: { forceId?: number; forceAll?: boolean; simulate?: boolean }): Promise<WorkerRunResult> {
+    const now = new Date();
+    const forceId = options?.forceId;
+    const forceAll = options?.forceAll ?? false;
+    const allowSimulation = options?.simulate ?? localStore.simulationMode;
+
+    if (isDatabaseConnected) {
+      try {
+        return await this.processDatabaseAutomations(now, forceId, forceAll, allowSimulation);
+      } catch (err: any) {
+        console.warn('[Worker] Database query failed, checking local store:', err?.message);
+      }
+    }
+
+    // Process from local memory store
+    return await this.processLocalStoreAutomations(now, forceId, forceAll, allowSimulation);
+  }
+
+  private async processDatabaseAutomations(
+    now: Date,
+    forceId?: number,
+    forceAll?: boolean,
+    allowSimulation?: boolean
+  ): Promise<WorkerRunResult> {
+    // 1. Get active account credentials
+    const accounts = await db.select().from(whatsappAccounts).limit(1);
+    const account = accounts[0];
+
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+    let whereClause;
+    if (forceId) {
+      whereClause = eq(automations.id, forceId);
+    } else if (forceAll) {
+      whereClause = and(
+        eq(automations.status, 'SCHEDULED'),
+        or(isNull(automations.lockedAt), lte(automations.lockedAt, fiveMinutesAgo))
+      );
+    } else {
+      whereClause = and(
+        eq(automations.status, 'SCHEDULED'),
+        lte(automations.scheduledAt, now),
+        or(isNull(automations.lockedAt), lte(automations.lockedAt, fiveMinutesAgo))
+      );
+    }
+
+    const dueJobs = await db
+      .select({
+        automation: automations,
+        contact: contacts,
+        template: messageTemplates,
+      })
+      .from(automations)
+      .innerJoin(contacts, eq(automations.contactId, contacts.id))
+      .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
+      .where(whereClause)
+      .limit(10);
+
+    if (dueJobs.length === 0) {
+      return { processed: 0, successCount: 0, failureCount: 0, message: 'No due automations in database queue.' };
+    }
+
+    let successCount = 0;
+    let failureCount = 0;
+    const details: Array<{ id: number; contactName: string; status: string; error?: string }> = [];
+
+    for (const job of dueJobs) {
+      const { automation, contact, template } = job;
+
+      // Lock job
+      const lockResult = await db
+        .update(automations)
+        .set({
+          status: 'PROCESSING',
+          lockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(automations.id, automation.id),
+            eq(automations.status, 'SCHEDULED')
+          )
+        )
+        .returning();
+
+      if (lockResult.length === 0 && !forceId) {
+        continue;
+      }
+
+      const res = await this.executeJob(automation, contact, template, account, allowSimulation);
+      if (res.status === 'SENT') {
+        successCount++;
+      } else {
+        failureCount++;
+      }
+      details.push({
+        id: automation.id,
+        contactName: contact.name,
+        status: res.status,
+        error: res.errorMessage,
+      });
+    }
+
+    return {
+      processed: dueJobs.length,
+      successCount,
+      failureCount,
+      details,
+      message: `Processed ${dueJobs.length} automation(s): ${successCount} sent, ${failureCount} failed.`,
+    };
+  }
+
+  private async processLocalStoreAutomations(
+    now: Date,
+    forceId?: number,
+    forceAll?: boolean,
+    allowSimulation?: boolean
+  ): Promise<WorkerRunResult> {
+    const creds = await resolveWhatsAppCredentials();
+    const hasLiveCreds = creds.isFullyConfigured;
+
+    const dueJobs = localStore.automations.filter((a) => {
+      if (forceId) {
+        return a.id === forceId;
+      }
+      if (forceAll) return a.status === 'SCHEDULED' || a.status === 'FAILED';
+      if (a.status === 'SCHEDULED') {
+        return new Date(a.scheduledAt) <= now;
+      }
+      // If credentials were newly detected, automatically retry jobs that failed purely due to missing credentials
+      if (hasLiveCreds && a.status === 'FAILED' && a.errorMessage?.includes('credentials are not configured')) {
+        return true;
+      }
+      return false;
+    });
+
+    if (dueJobs.length === 0) {
+      return { processed: 0, successCount: 0, failureCount: 0, message: 'No due automations in local queue.' };
+    }
+
+    console.log(`[Worker] Found ${dueJobs.length} due automation(s) in local store (hasLiveCreds=${hasLiveCreds}).`);
+    let successCount = 0;
+    let failureCount = 0;
+    const details: Array<{ id: number; contactName: string; status: string; error?: string }> = [];
+
+    for (const job of dueJobs) {
+      job.status = 'PROCESSING';
+      job.lockedAt = new Date();
+      job.updatedAt = new Date();
+
+      const contact = localStore.contacts.find((c) => c.id === job.contactId) || {
+        id: job.contactId,
+        name: 'Demo Contact',
+        phone: '+918605083060',
+        optIn: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const template = localStore.templates.find((t) => t.id === job.templateId) || {
+        id: job.templateId,
+        name: 'hello_world',
+        status: 'APPROVED',
+        language: 'en_US',
+        category: 'UTILITY',
+        components: [],
+        metaTemplateId: 'meta_tpl_hello_world',
+        variableCount: 0,
+        lastSyncedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+===== src/middleware/auth.ts =====
+import { Request, Response, NextFunction } from 'express';
+import { adminAuth } from '../lib/firebase-admin.ts';
+import { DecodedIdToken } from 'firebase-admin/auth';
+
+export interface AuthRequest extends Request {
+  user?: DecodedIdToken;
+}
+
+export const requireAuth = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing token' });
+  }
+
+  const token = authHeader.split('Bearer ')[1];
+
+  // Check for internal demo/admin session token
+  if (token.startsWith('admin_session_token_')) {
+    req.user = {
+      uid: 'admin_navin_default',
+      email: 'admin@whatsapp.business',
+      name: 'System Administrator',
+      auth_time: Math.floor(Date.now() / 1000),
+      iss: 'https://securetoken.google.com/internal-admin',
+      aud: 'internal-admin',
+      sub: 'admin_navin_default',
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 86400 * 30,
+      firebase: { identities: {}, sign_in_provider: 'custom' },
+    } as DecodedIdToken;
+    return next();
+  }
+
+  try {
+    const decodedToken = await adminAuth.verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    console.error('Error verifying Firebase ID token:', error);
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+  }
+};
+===== src/types.ts =====
+export interface User {
+  id: number;
+  uid: string;
+  email: string;
+  name?: string;
+  role: string;
+}
+
+export interface WhatsAppAccountSettings {
+  configured: boolean;
+  hasToken?: boolean;
+  hasPhoneId?: boolean;
+  tokenSource?: string;
+  phoneIdSource?: string;
+  errorNotes?: string;
+  id?: number;
+  metaAppId: string;
+  metaAppSecretMasked?: string;
+  businessAccountId: string;
+  phoneNumberId: string;
+  accessTokenMasked?: string;
+  webhookVerifyToken: string;
+  apiVersion: string;
+  status: 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+  displayPhoneNumber?: string;
+  verifiedName?: string;
+  qualityRating?: string;
+  lastTestedAt?: string;
+}
+
+export interface Contact {
+  id: number;
+  name: string;
+  phone: string;
+  optIn: boolean;
+  dob?: string | null; // Format: YYYY-MM-DD
+  birthdayAutomationEnabled?: boolean;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BirthdaySettings {
+  enabled: boolean;
+  defaultSendTime: string; // e.g. "09:00" in 24h format
+  defaultTemplateId: number;
+  customMessage: string;
+  timezone: string;
+}
+
+export interface BirthdayWishContactSummary {
+  contactId: number;
+  contactName: string;
+  contactPhone: string;
+  optIn: boolean;
+  dob: string;
+  birthMonth: number; // 1-12
+  birthDay: number; // 1-31
+  ageTurning: number;
+  daysUntilBirthday: number; // 0 for today
+  isToday: boolean;
+  isThisMonth: boolean;
+  nextBirthdayDate: string; // YYYY-MM-DD
+  nextScheduledTime?: string;
+  automationId?: number | null;
+  automationStatus?: 'SCHEDULED' | 'PROCESSING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'SIMULATED' | 'NOT_SCHEDULED' | 'PAUSED';
+  lastSentYear?: number | null;
+  birthdayAutomationEnabled: boolean;
+  templateId?: number;
+  templateName?: string;
+  customMessage?: string;
+}
+
+export interface BirthdayWishHistoryItem {
+  id: number;
+  automationId?: number | null;
+  contactId: number;
+  contactName: string;
+  contactPhone: string;
+  year: number;
+  scheduledAt: string;
+  executedAt?: string;
+  status: string;
+  templateName?: string;
+  messagePreview?: string;
+  errorMessage?: string;
+}
+
+export interface MessageTemplate {
+  id: number;
+  metaTemplateId?: string;
+  name: string;
+  language: string;
+  category: string;
+  status: 'APPROVED' | 'REJECTED' | 'PENDING';
+  components: any[];
+  variableCount: number;
+  lastSyncedAt?: string;
+}
+
+export type Template = MessageTemplate;
+
+export interface ScheduledAutomation {
+  id: number;
+  contactId: number;
+  templateId: number;
+  variables: Record<string, string>;
+  scheduledAt: string;
+  timezone: string;
+  status: 'SCHEDULED' | 'PROCESSING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'CANCELLED' | 'SIMULATED';
+  executedAt?: string;
+  errorMessage?: string;
+  createdAt: string;
+  contactName: string;
+  contactPhone: string;
+  contactOptIn: boolean;
+  templateName: string;
+  templateLanguage: string;
+  templateStatus: string;
+}
+
+export interface DashboardData {
+  connection: {
+    configured: boolean;
+    status: string;
+    displayPhoneNumber?: string;
+    verifiedName?: string;
+    qualityRating?: string;
+    lastTestedAt?: string;
+  };
+  stats: {
+    totalContacts: number;
+    scheduledMessages: number;
+    messagesSent: number;
+    failedMessages: number;
+  };
+  upcoming: ScheduledAutomation[];
+}
+===== .env.example =====
+# GEMINI_API_KEY: Required for Gemini AI API calls.
+# AI Studio automatically injects this at runtime from user secrets.
+# Users configure this via the Secrets panel in the AI Studio UI.
+GEMINI_API_KEY="MY_GEMINI_API_KEY"
+
+# APP_URL: The URL where this applet is hosted.
+# AI Studio automatically injects this at runtime with the Cloud Run service URL.
+# Used for self-referential links, OAuth callbacks, and API endpoints.
+APP_URL="MY_APP_URL"
+
+# DATABASE CONFIGURATION (Optional for local development)
+# You can provide a single connection string:
+# DATABASE_URL="postgresql://postgres:postgres@localhost:5432/whatsapp_db"
+# Or individual connection parameters:
+SQL_HOST="localhost"
+SQL_PORT="5432"
+SQL_USER="postgres"
+SQL_PASSWORD=""
+SQL_DB_NAME="whatsapp_db"
+
+# META WHATSAPP CLOUD API (Optional: can also be configured in WhatsApp Settings UI)
+META_PHONE_NUMBER_ID=""
+META_ACCESS_TOKEN=""
+META_APP_ID=""
+META_APP_SECRET=""
+META_BUSINESS_ACCOUNT_ID=""

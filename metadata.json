@@ -1,0 +1,6 @@
+{
+  "name": "WhatsApp Message Automation",
+  "description": "Scheduled WhatsApp message automation using official Meta WhatsApp Business Cloud API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
