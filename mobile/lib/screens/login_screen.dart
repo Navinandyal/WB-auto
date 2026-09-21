@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api_client.dart';
 import '../providers/providers.dart';
 import 'forgot_password_screen.dart';
+import '../widgets/country_phone_field.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -19,6 +20,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   final _mobile = TextEditingController();
   final _password = TextEditingController();
+  String _loginFullPhone = '';
+  String _registerFullPhone = '';
 
   final _name = TextEditingController();
   final _business = TextEditingController();
@@ -51,7 +54,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() {
       _rememberMe = remember;
       if (remember && mobile != null && mobile.isNotEmpty) {
-        _mobile.text = mobile;
+        _loginFullPhone = mobile;
+        _mobile.text = mobile.startsWith('+91') ? mobile.substring(3) : mobile.replaceAll(RegExp(r'\D'), '');
       }
     });
   }
@@ -78,7 +82,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     FocusScope.of(context).unfocus();
     if (!(_loginKey.currentState?.validate() ?? false)) return;
 
-    final normalized = _normalizePhoneForDisplay(_mobile.text);
+    final normalized = _loginFullPhone.isNotEmpty ? _loginFullPhone : _normalizePhoneForDisplay(_mobile.text);
     final storage = ref.read(secureStorageProvider);
     if (_rememberMe) {
       await storage.write(key: 'remember_login', value: 'true');
@@ -104,7 +108,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
 
     try {
-      final normalizedMobile = _normalizePhoneForDisplay(_registerMobile.text);
+      final normalizedMobile = _registerFullPhone.isNotEmpty ? _registerFullPhone : _normalizePhoneForDisplay(_registerMobile.text);
       final data = await ref.read(apiClientProvider).post('/api/auth/register', data: {
         'name': _name.text.trim(),
         'businessName': _business.text.trim(),
@@ -132,7 +136,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   void _backToLoginAfterRegistration() {
-    final registeredMobile = _normalizePhoneForDisplay(_registerMobile.text);
+    final registeredMobile = _registerFullPhone.isNotEmpty ? _registerFullPhone : _normalizePhoneForDisplay(_registerMobile.text);
     setState(() {
       _register = false;
       _registrationSubmitted = false;
@@ -269,7 +273,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
             const SizedBox(height: 18),
             const Text(
-              'Manage contacts, templates, birthday wishes and WhatsApp automations from one secure business account.',
+              'Manage contacts, groups, approved templates, marketing campaigns and WhatsApp automations from one secure business account.',
               style: TextStyle(
                 color: Color(0xFFD9E7FF),
                 fontSize: 17,
@@ -279,7 +283,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             const SizedBox(height: 32),
             ...[
               ('Manage Your Business', Icons.apartment_rounded),
-              ('Automate Birthday Wishes', Icons.cake_rounded),
+              ('Run Marketing & Automations', Icons.campaign_rounded),
               ('Manage Contacts & Templates', Icons.people_alt_outlined),
               ('Secure Account Access', Icons.verified_user_rounded),
             ].map(
@@ -341,22 +345,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               style: TextStyle(color: Color(0xFF64739B), fontSize: 16),
             ),
             const SizedBox(height: 28),
-            TextFormField(
-              controller: _mobile,
-              keyboardType: TextInputType.phone,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.telephoneNumber],
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[0-9+ ()-]')),
-                LengthLimitingTextInputFormatter(20),
-              ],
-              decoration: _input(
-                'Mobile number',
-                Icons.phone_outlined,
-                hint: '+91 98765 43210',
-              ),
-              validator: _phoneValidator,
-            ),
+            CountryPhoneField(controller: _mobile, initialE164: _loginFullPhone.isEmpty ? null : _loginFullPhone, onChangedE164: (v) => _loginFullPhone = v),
             const SizedBox(height: 14),
             TextFormField(
               controller: _password,
@@ -563,22 +552,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               validator: _optionalEmailValidator,
             ),
             const SizedBox(height: 13),
-            TextFormField(
-              controller: _registerMobile,
-              keyboardType: TextInputType.phone,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.telephoneNumber],
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[0-9+ ()-]')),
-                LengthLimitingTextInputFormatter(20),
-              ],
-              decoration: _input(
-                'Mobile number',
-                Icons.phone_outlined,
-                hint: '+91 98765 43210',
-              ),
-              validator: _phoneValidator,
-            ),
+            CountryPhoneField(controller: _registerMobile, onChangedE164: (v) => _registerFullPhone = v),
             const SizedBox(height: 13),
             TextFormField(
               controller: _registerPassword,

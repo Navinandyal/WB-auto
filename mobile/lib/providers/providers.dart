@@ -63,6 +63,7 @@ final authProvider = StateNotifierProvider<AuthController, AuthState>((ref) => A
 
 final dashboardProvider = FutureProvider<DashboardData>((ref) async => DashboardData.fromJson((await ref.read(apiClientProvider).get('/api/dashboard/stats') as Map).cast<String,dynamic>()));
 final contactsProvider = FutureProvider<List<Contact>>((ref) async => ((await ref.read(apiClientProvider).get('/api/contacts')) as List).whereType<Map>().map((e)=>Contact.fromJson(e.cast<String,dynamic>())).toList());
+final contactGroupsProvider = FutureProvider<List<ContactGroup>>((ref) async => ((await ref.read(apiClientProvider).get('/api/contact-groups')) as List).whereType<Map>().map((e)=>ContactGroup.fromJson(e.cast<String,dynamic>())).toList());
 final templatesProvider = FutureProvider<List<MessageTemplate>>((ref) async => ((await ref.read(apiClientProvider).get('/api/whatsapp/templates')) as List).whereType<Map>().map((e)=>MessageTemplate.fromJson(e.cast<String,dynamic>())).toList());
 final automationsProvider = FutureProvider<List<Automation>>((ref) async => ((await ref.read(apiClientProvider).get('/api/automations')) as List).whereType<Map>().map((e)=>Automation.fromJson(e.cast<String,dynamic>())).toList());
 final birthdaysProvider = FutureProvider<List<BirthdayItem>>((ref) async => ((await ref.read(apiClientProvider).get('/api/wishflow/summary')) as List).whereType<Map>().map((e)=>BirthdayItem.fromJson(e.cast<String,dynamic>())).toList());

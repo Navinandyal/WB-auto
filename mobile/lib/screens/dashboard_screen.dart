@@ -4,6 +4,9 @@ import 'package:intl/intl.dart';
 import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
+import 'bulk_send_screen.dart';
+import 'groups_screen.dart';
+import 'import_contacts_screen.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -108,6 +111,23 @@ class DashboardScreen extends ConsumerWidget {
                   Expanded(child: Text('No birthdays today.', style: TextStyle(fontWeight: FontWeight.w800, color: BusinessColors.ink))),
                 ]))),
               ],
+              const SizedBox(height: 18),
+              const SectionTitle('Quick Actions'),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: _ActionCard(icon: Icons.campaign_rounded, label: 'Marketing', onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const BulkSendScreen())))),
+                const SizedBox(width: 10),
+                Expanded(child: _ActionCard(icon: Icons.groups_rounded, label: 'Groups', onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const GroupsScreen())))),
+                const SizedBox(width: 10),
+                Expanded(child: _ActionCard(icon: Icons.upload_file_rounded, label: 'Import CSV', onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImportContactsScreen())))),
+              ]),
+              if (birthdayToday > 0) ...[
+                const SizedBox(height: 10),
+                SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: () {
+                  int? preferred; for (final b in todayBirthdays) { if (b.templateId != null) { preferred = b.templateId; break; } }
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => BulkSendScreen(preselectedContactIds: todayBirthdays.where((b) => b.optIn).map((b) => b.contactId).toList(), preferredTemplateId: preferred)));
+                }, icon: const Icon(Icons.cake_rounded), label: const Text("Select & Send Today's Birthday Wishes"))),
+              ],
               const SizedBox(height: 20),
               const SectionTitle('Upcoming Messages'),
               const SizedBox(height: 10),
@@ -154,6 +174,12 @@ class _Metric extends StatelessWidget {
           ]),
         ),
       );
+}
+
+class _ActionCard extends StatelessWidget {
+  const _ActionCard({required this.icon, required this.label, required this.onTap});
+  final IconData icon; final String label; final VoidCallback onTap;
+  @override Widget build(BuildContext context) => InkWell(onTap:onTap,borderRadius:BorderRadius.circular(18),child:Container(padding:const EdgeInsets.symmetric(vertical:16,horizontal:8),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(18),border:Border.all(color:BusinessColors.line)),child:Column(children:[Icon(icon,color:BusinessColors.green,size:28),const SizedBox(height:8),Text(label,textAlign:TextAlign.center,style:const TextStyle(fontWeight:FontWeight.w800,fontSize:12))])));
 }
 
 class _Status extends StatelessWidget {

@@ -65,115 +65,23 @@ export interface LocalWhatsAppAccount {
 class LocalStore {
   public account: LocalWhatsAppAccount | null = null;
   public contacts: LocalContact[] = [];
-  public templates: LocalTemplate[] = [
-    {
-      id: 1,
-      metaTemplateId: 'meta_tpl_hello_world',
-      name: 'hello_world',
-      language: 'en_US',
-      category: 'UTILITY',
-      status: 'APPROVED',
-      components: [
-        {
-          type: 'BODY',
-          text: 'Hello World! Welcome and thank you for connecting with us.',
-        },
-      ],
-      variableCount: 0,
-      lastSyncedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    {
-      id: 2,
-      metaTemplateId: 'meta_tpl_appointment_confirmation',
-      name: 'appointment_confirmation',
-      language: 'en_US',
-      category: 'UTILITY',
-      status: 'APPROVED',
-      components: [
-        {
-          type: 'BODY',
-          text: 'Hello {{1}}, your appointment {{2}} has been confirmed for {{3}}. Reply STOP to unsubscribe.',
-        },
-      ],
-      variableCount: 3,
-      lastSyncedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    {
-      id: 3,
-      metaTemplateId: 'meta_tpl_payment_reminder',
-      name: 'payment_reminder',
-      language: 'en_US',
-      category: 'UTILITY',
-      status: 'APPROVED',
-      components: [
-        {
-          type: 'BODY',
-          text: 'Dear {{1}}, this is a reminder that invoice {{2}} is due on {{3}}. Thank you!',
-        },
-      ],
-      variableCount: 3,
-      lastSyncedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    {
-      id: 4,
-      metaTemplateId: 'meta_tpl_welcome_message',
-      name: 'welcome_greeting',
-      language: 'en_US',
-      category: 'MARKETING',
-      status: 'APPROVED',
-      components: [
-        {
-          type: 'BODY',
-          text: 'Welcome {{1}}! We are thrilled to have you with us. Let us know if you need any assistance.',
-        },
-      ],
-      variableCount: 1,
-      lastSyncedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    {
-      id: 5,
-      metaTemplateId: 'meta_tpl_happy_birthday_wishes',
-      name: 'happy_birthday_wishes',
-      language: 'en_US',
-      category: 'MARKETING',
-      status: 'PENDING_APPROVAL',
-      components: [
-        {
-          type: 'BODY',
-          text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
-        },
-        {
-          type: 'FOOTER',
-          text: 'Reply STOP to opt out',
-        },
-      ],
-      variableCount: 1,
-      lastSyncedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-  ];
+  // No demo templates are kept in the local fallback store. Real templates are
+  // loaded from PostgreSQL/Meta. The approved Birthday reference is inserted by
+  // server startup into PostgreSQL based on the user-supplied approved template.
+  public templates: LocalTemplate[] = [];
   public automations: LocalAutomation[] = [];
   public messages: any[] = [];
   public auditLogs: any[] = [];
   public simulationMode = false;
   public nextContactId = 1;
-  public nextTemplateId = 6;
+  public nextTemplateId = 1;
   public nextAutomationId = 1;
   public nextMessageId = 1;
 
   public birthdaySettings = {
     enabled: true,
     defaultSendTime: '09:00',
-    defaultTemplateId: 1, // hello_world - Meta's universal default pre-approved template
+    defaultTemplateId: 0, // resolved dynamically to the approved Birthday template
     customMessage: '🎉 Happy Birthday {{name}}! Wishing you a fantastic year filled with happiness, health, and success! 🎂🎈',
     timezone: 'Asia/Kolkata',
   };

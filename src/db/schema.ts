@@ -62,14 +62,34 @@ export const contacts = pgTable('contacts', {
   optIn: boolean('opt_in').default(true).notNull(),
   dob: text('dob'), // YYYY-MM-DD
   birthdayAutomationEnabled: boolean('birthday_automation_enabled').default(true).notNull(),
+  email: text('email'),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+
+// Business-owned contact groups for bulk messaging and automations.
+export const contactGroups = pgTable('contact_groups', {
+  id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const contactGroupMembers = pgTable('contact_group_members', {
+  id: serial('id').primaryKey(),
+  groupId: integer('group_id').references(() => contactGroups.id, { onDelete: 'cascade' }).notNull(),
+  contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Approved WhatsApp Templates
 export const messageTemplates = pgTable('message_templates', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
   metaTemplateId: text('meta_template_id').unique(),
   name: text('name').notNull(),
   language: text('language').notNull(),

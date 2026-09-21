@@ -8,6 +8,8 @@ import {
   users,
   whatsappAccounts,
   contacts,
+  contactGroups,
+  contactGroupMembers,
   messageTemplates,
   automations,
   messages,
@@ -43,27 +45,73 @@ initDatabaseSchema()
           console.log(`[Auth] Fixed administrator ready for ${fixedAdmin.phone}.`);
         }
 
-        // Seed default approved templates if database has none
-        const existingTpls = await db.select().from(messageTemplates).limit(1);
-        if (existingTpls.length === 0) {
-          for (const t of localStore.templates) {
-            await db
-              .insert(messageTemplates)
-              .values({
-                metaTemplateId: t.metaTemplateId,
-                name: t.name,
-                language: t.language,
-                category: t.category,
-                status: t.status,
-                components: t.components,
-                variableCount: t.variableCount,
-                lastSyncedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .onConflictDoNothing();
-          }
-          console.log(`[WhatsApp] Seeded ${localStore.templates.length} default approved templates into database.`);
-        }
+        // Remove legacy demo templates from older builds. These records were platform
+        // placeholders and must not appear in real business accounts.
+        const legacyDemoMetaIds = [
+          'meta_tpl_hello_world',
+          'meta_tpl_appointment_confirmation',
+          'meta_tpl_payment_reminder',
+          'meta_tpl_welcome_message',
+          'meta_tpl_happy_birthday_wishes',
+        ];
+        await db.delete(messageTemplates).where(and(
+          isNull(messageTemplates.ownerUserId),
+          inArray(messageTemplates.metaTemplateId, legacyDemoMetaIds),
+        ));
+
+        // The user supplied this Birthday template as an already-approved Meta
+        // template. Keep exactly one platform reference for it, with the real
+        // template name used for sending: `birthday`. Business-synced Meta
+        // templates still override/appear alongside this only when they are real.
+        await db.insert(messageTemplates).values({
+          ownerUserId: null,
+          metaTemplateId: 'approved_reference_birthday',
+          name: 'birthday',
+          language: 'en_US',
+          category: 'MARKETING',
+          status: 'APPROVED',
+          components: [{
+            type: 'BODY',
+            text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
+          }],
+          variableCount: 1,
+          lastSyncedAt: new Date(),
+          updatedAt: new Date(),
+        }).onConflictDoUpdate({
+          target: messageTemplates.metaTemplateId,
+          set: {
+            name: 'birthday',
+            language: 'en_US',
+            category: 'MARKETING',
+            status: 'APPROVED',
+            components: [{
+              type: 'BODY',
+              text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
+            }],
+            variableCount: 1,
+            lastSyncedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+        // The supplied screenshot confirms the Birthday template is approved.
+        // Upgrade any older pending copy of this same template so the UI does not
+        // keep showing PENDING_APPROVAL from previous demo/build data.
+        await db.update(messageTemplates).set({
+          status: 'APPROVED',
+          category: 'MARKETING',
+          language: 'en_US',
+          components: [{
+            type: 'BODY',
+            text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
+          }],
+          variableCount: 1,
+          updatedAt: new Date(),
+        }).where(or(
+          eq(messageTemplates.name, 'birthday'),
+          eq(messageTemplates.name, 'happy_birthday_wishes'),
+        ));
+
+        console.log('[WhatsApp] Legacy demo templates removed; approved Birthday template is ready.');
       } catch (err: any) {
         console.warn('Notice seeding env WhatsApp credentials/templates to DB:', err?.message);
       }
@@ -102,6 +150,8 @@ app.post('/api/auth/register', async (req, res) => {
     if (!phone || !password || !name || !businessName || !businessAddress) {
       return res.status(400).json({ error: 'Name, business name, business address, mobile number and password are required.' });
     }
+    const registrationPhoneCheck = validateInternationalPhone(phone);
+    if (!registrationPhoneCheck.ok) return res.status(400).json({ error: registrationPhoneCheck.error });
     if (name.length < 2) return res.status(400).json({ error: 'Please enter a valid full name.' });
     if (businessName.length < 2) return res.status(400).json({ error: 'Please enter a valid business name.' });
     if (businessAddress.length < 3) return res.status(400).json({ error: 'Please enter a valid business address.' });
@@ -568,11 +618,23 @@ app.post('/api/whatsapp/test', requireAuth, async (req: AuthRequest, res) => {
    4. CONTACTS MANAGEMENT
    ========================================================================= */
 
-// Normalize phone to international format: +[country code][number]
+// Normalize phone to E.164. Country code is required. E.164 allows max 15 digits.
 const normalizeE164 = (raw: string): string => {
-  const digits = raw.replace(/[^0-9]/g, '');
-  if (!digits) return '';
+  const digits = String(raw || '').replace(/[^0-9]/g, '');
+  if (!digits || digits.length < 7 || digits.length > 15) return '';
   return `+${digits}`;
+};
+
+const validateInternationalPhone = (raw: string): { ok: boolean; normalized?: string; error?: string } => {
+  const normalized = normalizeE164(raw);
+  if (!normalized) return { ok: false, error: 'Enter a valid international phone number with country code.' };
+  const digits = normalized.slice(1);
+  // India: +91 followed by exactly 10 digits, mobile starts with 6-9.
+  if (digits.startsWith('91')) {
+    const national = digits.slice(2);
+    if (!/^[6-9][0-9]{9}$/.test(national)) return { ok: false, error: 'Indian mobile numbers must be +91 followed by 10 digits starting with 6, 7, 8 or 9.' };
+  }
+  return { ok: true, normalized };
 };
 
 // GET contacts with search. Business users see only their own records; admin can inspect all.
@@ -592,15 +654,17 @@ app.get('/api/contacts', requireAuth, async (req: AuthRequest, res) => {
 app.post('/api/contacts', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create contacts from a business account.' });
-    const { name, phone, optIn, notes, dob, birthdayAutomationEnabled } = req.body;
+    const { name, phone, email, optIn, notes, dob, birthdayAutomationEnabled } = req.body;
     if (!name || !phone) return res.status(400).json({ error: 'Name and WhatsApp phone number are required.' });
-    const normalizedPhone = normalizeE164(phone);
-    if (normalizedPhone.length < 8) return res.status(400).json({ error: 'Enter a valid phone number with country code.' });
+    const phoneValidation = validateInternationalPhone(phone);
+    if (!phoneValidation.ok) return res.status(400).json({ error: phoneValidation.error });
+    const normalizedPhone = phoneValidation.normalized!;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) return res.status(400).json({ error: 'Enter a valid email address.' });
     const [duplicate] = await db.select({ id: contacts.id }).from(contacts)
       .where(and(eq(contacts.ownerUserId, req.user!.id), eq(contacts.phone, normalizedPhone))).limit(1);
     if (duplicate) return res.status(409).json({ error: 'This phone number is already saved in WishFlow.' });
     const [newContact] = await db.insert(contacts).values({
-      ownerUserId: req.user!.id, name: name.trim(), phone: normalizedPhone, optIn: optIn !== false,
+      ownerUserId: req.user!.id, name: name.trim(), phone: normalizedPhone, email: email ? String(email).trim() : null, optIn: optIn !== false,
       dob: dob ? String(dob).trim() : null, birthdayAutomationEnabled: birthdayAutomationEnabled !== false,
       notes: notes || null,
     }).returning();
@@ -618,10 +682,11 @@ app.put('/api/contacts/:id', requireAuth, async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
     const ownerCondition = req.user?.role === 'admin' ? eq(contacts.id, id) : and(eq(contacts.id, id), eq(contacts.ownerUserId, req.user!.id));
-    const { name, phone, optIn, notes, dob, birthdayAutomationEnabled } = req.body;
+    const { name, phone, email, optIn, notes, dob, birthdayAutomationEnabled } = req.body;
     const updateData: any = { updatedAt: new Date() };
     if (name !== undefined) updateData.name = String(name).trim();
-    if (phone !== undefined) updateData.phone = normalizeE164(String(phone));
+    if (phone !== undefined) { const v = validateInternationalPhone(String(phone)); if (!v.ok) return res.status(400).json({ error: v.error }); updateData.phone = v.normalized; }
+    if (email !== undefined) { if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) return res.status(400).json({ error: 'Enter a valid email address.' }); updateData.email = email ? String(email).trim() : null; }
     if (typeof optIn === 'boolean') updateData.optIn = optIn;
     if (notes !== undefined) updateData.notes = notes;
     if (dob !== undefined) updateData.dob = dob ? String(dob).trim() : null;
@@ -648,6 +713,90 @@ app.delete('/api/contacts/:id', requireAuth, async (req: AuthRequest, res) => {
     res.status(500).json({ error: err.message || 'Failed to delete contact.' });
   }
 });
+
+
+// Fixed CSV import payload. Expected columns in the client: name,country_code,phone,email,date_of_birth,opt_in,notes
+app.post('/api/contacts/import', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Import contacts from a business account.' });
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) return res.status(400).json({ error: 'No CSV contact rows were provided.' });
+    if (rows.length > 5000) return res.status(400).json({ error: 'Import up to 5,000 contacts at a time.' });
+    let imported = 0, skipped = 0, failed = 0;
+    const errors: any[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const name = String(row.name || '').trim();
+      const country = String(row.country_code || '').replace(/\D/g, '');
+      const national = String(row.phone || '').replace(/\D/g, '');
+      const rawPhone = `+${country}${national}`;
+      const check = validateInternationalPhone(rawPhone);
+      if (!name || !check.ok) { failed++; errors.push({ row: i + 2, error: !name ? 'Missing name' : check.error }); continue; }
+      const [dupe] = await db.select({ id: contacts.id }).from(contacts).where(and(eq(contacts.ownerUserId, req.user!.id), eq(contacts.phone, check.normalized!))).limit(1);
+      if (dupe) { skipped++; continue; }
+      const email = String(row.email || '').trim();
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { failed++; errors.push({ row: i + 2, error: 'Invalid email' }); continue; }
+      await db.insert(contacts).values({ ownerUserId: req.user!.id, name, phone: check.normalized!, email: email || null, dob: row.date_of_birth ? String(row.date_of_birth).trim() : null, optIn: ['true','1','yes','y'].includes(String(row.opt_in ?? '').toLowerCase()), birthdayAutomationEnabled: true, notes: row.notes ? String(row.notes).trim() : null });
+      imported++;
+    }
+    res.json({ success: true, imported, skipped, failed, errors: errors.slice(0, 100) });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Contact import failed.' }); }
+});
+
+app.get('/api/contact-groups', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.json([]);
+    const groups = await db.select().from(contactGroups).where(eq(contactGroups.ownerUserId, req.user!.id)).orderBy(desc(contactGroups.createdAt));
+    const out = [];
+    for (const g of groups) {
+      const [c] = await db.select({ val: count() }).from(contactGroupMembers).where(eq(contactGroupMembers.groupId, g.id));
+      out.push({ ...g, memberCount: Number(c?.val || 0) });
+    }
+    res.json(out);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to load groups.' }); }
+});
+
+app.post('/api/contact-groups', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create groups from a business account.' });
+    const name = String(req.body?.name || '').trim(); const description = String(req.body?.description || '').trim();
+    const contactIds = Array.isArray(req.body?.contactIds) ? req.body.contactIds.map(Number).filter(Boolean) : [];
+    if (name.length < 2) return res.status(400).json({ error: 'Group name must be at least 2 characters.' });
+    const [g] = await db.insert(contactGroups).values({ ownerUserId: req.user!.id, name, description: description || null }).returning();
+    if (contactIds.length) {
+      const owned = await db.select({id: contacts.id}).from(contacts).where(and(eq(contacts.ownerUserId, req.user!.id), inArray(contacts.id, contactIds)));
+      for (const c of owned) await db.insert(contactGroupMembers).values({ groupId: g.id, contactId: c.id }).onConflictDoNothing();
+    }
+    res.status(201).json(g);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to create group.' }); }
+});
+
+app.get('/api/contact-groups/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [g] = await db.select().from(contactGroups).where(and(eq(contactGroups.id,id), eq(contactGroups.ownerUserId, req.user!.id))).limit(1);
+    if (!g) return res.status(404).json({ error: 'Group not found.' });
+    const members = await db.select({ id: contacts.id, name: contacts.name, phone: contacts.phone, optIn: contacts.optIn, dob: contacts.dob }).from(contactGroupMembers).innerJoin(contacts, eq(contactGroupMembers.contactId, contacts.id)).where(eq(contactGroupMembers.groupId,id));
+    res.json({ group: g, members });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to load group.' }); }
+});
+
+app.put('/api/contact-groups/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const id=Number(req.params.id); const [g]=await db.select().from(contactGroups).where(and(eq(contactGroups.id,id),eq(contactGroups.ownerUserId,req.user!.id))).limit(1);
+    if(!g) return res.status(404).json({error:'Group not found.'});
+    const name=String(req.body?.name ?? g.name).trim(); const description=String(req.body?.description ?? g.description ?? '').trim();
+    await db.update(contactGroups).set({name,description:description||null,updatedAt:new Date()}).where(eq(contactGroups.id,id));
+    if(Array.isArray(req.body?.contactIds)){
+      await db.delete(contactGroupMembers).where(eq(contactGroupMembers.groupId,id));
+      const ids=req.body.contactIds.map(Number).filter(Boolean);
+      if(ids.length){ const owned=await db.select({id:contacts.id}).from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),inArray(contacts.id,ids))); for(const c of owned) await db.insert(contactGroupMembers).values({groupId:id,contactId:c.id}).onConflictDoNothing(); }
+    }
+    res.json({success:true});
+  } catch(err:any){res.status(500).json({error:err.message||'Failed to update group.'});}
+});
+
+app.delete('/api/contact-groups/:id', requireAuth, async (req: AuthRequest,res)=>{ try{ const id=Number(req.params.id); const deleted=await db.delete(contactGroups).where(and(eq(contactGroups.id,id),eq(contactGroups.ownerUserId,req.user!.id))).returning({id:contactGroups.id}); if(!deleted.length)return res.status(404).json({error:'Group not found.'}); res.json({success:true}); }catch(err:any){res.status(500).json({error:err.message||'Failed to delete group.'});}});
 
 /* =========================================================================
    5. TEMPLATES (OFFICIAL META SYNC & LISTING)
@@ -689,14 +838,30 @@ const getTemplatesHandler = async (req: AuthRequest, res: any) => {
     list = localStore.templates;
   }
 
-  if (req.user?.role !== 'admin') {
-    const normalized = (name: string) => String(name || '').toLowerCase().replace(/[- ]/g, '_');
-    const hello = list.find((t) => normalized(t.name) === 'hello_world');
-    const birthdays = list.filter((t) => normalized(t.name).includes('birthday'));
-    const birthday = birthdays.find((t) => t.status === 'APPROVED') || birthdays[0];
-    list = [hello, birthday].filter(Boolean);
-  }
+  const legacyDemoMetaIds = new Set([
+    'meta_tpl_hello_world',
+    'meta_tpl_appointment_confirmation',
+    'meta_tpl_payment_reminder',
+    'meta_tpl_welcome_message',
+    'meta_tpl_happy_birthday_wishes',
+  ]);
+  list = list.filter((t: any) => !legacyDemoMetaIds.has(String(t.metaTemplateId || '')));
 
+  if (req.user?.role !== 'admin') {
+    // Show the approved platform Birthday reference plus templates genuinely
+    // created/synced by this business.
+    list = list.filter((t: any) => !t.ownerUserId || Number(t.ownerUserId) === req.user!.id);
+
+    // Avoid duplicate Birthday rows left by older builds. Prefer the business's
+    // own Meta-synced record over the platform reference when both exist.
+    const byTemplate = new Map<string, any>();
+    for (const t of list) {
+      const key = `${String(t.name || '').toLowerCase()}|${String(t.language || '').toLowerCase()}`;
+      const current = byTemplate.get(key);
+      if (!current || (t.ownerUserId && !current.ownerUserId)) byTemplate.set(key, t);
+    }
+    list = Array.from(byTemplate.values());
+  }
   res.json(list);
 };
 
@@ -717,12 +882,12 @@ app.post('/api/whatsapp/templates/sync', requireAuth, async (req: AuthRequest, r
     for (const t of metaRes.templates) {
       const varCount = extractVariableCount(t.components);
       await db.insert(messageTemplates).values({
-        metaTemplateId: t.id, name: t.name, language: t.language, category: t.category,
+        ownerUserId: req.user!.id, metaTemplateId: t.id, name: t.name, language: t.language, category: t.category,
         status: t.status, components: t.components, variableCount: varCount,
         lastSyncedAt: new Date(), updatedAt: new Date(),
       }).onConflictDoUpdate({
         target: messageTemplates.metaTemplateId,
-        set: { name: t.name, language: t.language, category: t.category, status: t.status,
+        set: { ownerUserId: req.user!.id, name: t.name, language: t.language, category: t.category, status: t.status,
           components: t.components, variableCount: varCount, lastSyncedAt: new Date(), updatedAt: new Date() },
       });
       syncedCount++;
@@ -733,119 +898,34 @@ app.post('/api/whatsapp/templates/sync', requireAuth, async (req: AuthRequest, r
   }
 });
 
+
+// Create a WhatsApp template in the logged-in business WABA. Meta returns it as PENDING until reviewed.
+app.post('/api/whatsapp/templates', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create templates from a business account.' });
+    const name = String(req.body?.name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g,'_');
+    const category = String(req.body?.category || 'MARKETING').toUpperCase();
+    const language = String(req.body?.language || 'en_US');
+    const body = String(req.body?.body || '').trim();
+    if (!/^[a-z0-9_]{3,512}$/.test(name)) return res.status(400).json({ error: 'Template name must use lowercase letters, numbers and underscores.' });
+    if (!['MARKETING','UTILITY','AUTHENTICATION'].includes(category)) return res.status(400).json({ error: 'Invalid template category.' });
+    if (body.length < 5 || body.length > 1024) return res.status(400).json({ error: 'Template body must be 5-1024 characters.' });
+    const creds = await resolveWhatsAppCredentials(req.user!.id);
+    if (!creds.businessAccountId || !creds.accessToken) return res.status(400).json({ error: 'Connect WhatsApp Business credentials first.' });
+    const result = await WhatsAppService.createTemplate({ businessAccountId: creds.businessAccountId, accessToken: creds.accessToken, apiVersion: creds.apiVersion, name, category, language, body });
+    if (!result.success) return res.status(400).json({ error: result.error || 'Meta rejected the template request.' });
+    const components = [{ type: 'BODY', text: body }];
+    const variableCount = extractVariableCount(components);
+    const [created] = await db.insert(messageTemplates).values({ ownerUserId:req.user!.id, metaTemplateId: result.id || null, name, language, category, status: result.status || 'PENDING', components, variableCount, lastSyncedAt:new Date(), updatedAt:new Date() }).returning();
+    res.status(201).json(created);
+  } catch (err:any) { res.status(500).json({ error: err.message || 'Failed to create template.' }); }
+});
+
 // SEED STANDARD TEMPLATES HELPER (For test/demo environments if Meta account has not approved yet)
 app.post('/api/whatsapp/templates/seed-defaults', requireAuth, async (_req, res) => {
-  try {
-    const defaults = [
-      {
-        metaTemplateId: 'meta_tpl_appointment_confirmation',
-        name: 'appointment_confirmation',
-        language: 'en_US',
-        category: 'UTILITY',
-        status: 'APPROVED',
-        components: [
-          {
-            type: 'BODY',
-            text: 'Hello {{1}}, your appointment {{2}} has been confirmed for {{3}}. Reply STOP to unsubscribe.',
-          },
-        ],
-        variableCount: 3,
-      },
-      {
-        metaTemplateId: 'meta_tpl_payment_reminder',
-        name: 'payment_reminder',
-        language: 'en_US',
-        category: 'UTILITY',
-        status: 'APPROVED',
-        components: [
-          {
-            type: 'BODY',
-            text: 'Dear {{1}}, this is a reminder that invoice {{2}} is due on {{3}}. Thank you!',
-          },
-        ],
-        variableCount: 3,
-      },
-      {
-        metaTemplateId: 'meta_tpl_welcome_message',
-        name: 'welcome_greeting',
-        language: 'en_US',
-        category: 'MARKETING',
-        status: 'APPROVED',
-        components: [
-          {
-            type: 'BODY',
-            text: 'Welcome {{1}}! We are thrilled to have you with us. Let us know if you need any assistance.',
-          },
-        ],
-        variableCount: 1,
-      },
-      {
-        metaTemplateId: 'meta_tpl_happy_birthday_wishes',
-        name: 'happy_birthday_wishes',
-        language: 'en_US',
-        category: 'MARKETING',
-        status: 'PENDING_APPROVAL',
-        components: [
-          {
-            type: 'BODY',
-            text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
-          },
-          {
-            type: 'FOOTER',
-            text: 'Reply STOP to opt out',
-          },
-        ],
-        variableCount: 1,
-      },
-    ];
-
-    if (isDatabaseConnected) {
-      try {
-        for (const d of defaults) {
-          await db
-            .insert(messageTemplates)
-            .values({
-              metaTemplateId: d.metaTemplateId,
-              name: d.name,
-              language: d.language,
-              category: d.category,
-              status: d.status,
-              components: d.components,
-              variableCount: d.variableCount,
-              lastSyncedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .onConflictDoNothing();
-        }
-      } catch (err: any) {
-        console.warn('Notice seeding templates in DB:', err?.message);
-      }
-    }
-
-    // Also ensure in localStore
-    for (const d of defaults) {
-      if (!localStore.templates.some((t) => t.name === d.name)) {
-        localStore.templates.push({
-          id: localStore.nextTemplateId++,
-          metaTemplateId: d.metaTemplateId,
-          name: d.name,
-          language: d.language,
-          category: d.category,
-          status: d.status,
-          components: d.components,
-          variableCount: d.variableCount,
-          lastSyncedAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      }
-    }
-
-    res.json({ success: true, message: 'Approved starter templates seeded.' });
-  } catch (err: any) {
-    console.error('Error seeding templates:', err);
-    res.status(500).json({ error: 'Failed to seed starter templates' });
-  }
+  res.status(410).json({
+    error: 'Demo template seeding has been removed. Use Template Sync or Create Template instead.',
+  });
 });
 
 /* =========================================================================
@@ -914,10 +994,6 @@ app.post('/api/automations', requireAuth, async (req: AuthRequest, res) => {
     if (!contact.optIn) return res.status(400).json({ error: `${contact.name} has opted out of WhatsApp messages.` });
     const [template] = await db.select().from(messageTemplates).where(eq(messageTemplates.id, tId)).limit(1);
     if (!template) return res.status(404).json({ error: 'Template not found.' });
-    const normalizedTemplateName = String(template.name || '').toLowerCase().replace(/[- ]/g, '_');
-    if (normalizedTemplateName !== 'hello_world' && !normalizedTemplateName.includes('birthday')) {
-      return res.status(400).json({ error: 'Only Hello World or Birthday templates can be used for this automation.' });
-    }
     if (template.status !== 'APPROVED') return res.status(400).json({ error: 'The selected template is not approved by Meta yet.' });
     const targetDate = new Date(scheduledAt);
     if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ error: 'Invalid scheduled date or time.' });
@@ -1010,6 +1086,46 @@ app.post('/api/whatsapp/send', requireAuth, async (req: AuthRequest, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to send WhatsApp message.' });
   }
+});
+
+
+// Generic bulk sender for birthdays, marketing and other approved templates.
+app.post('/api/whatsapp/send-bulk', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Send messages from a business account.' });
+    let contactIds: number[] = Array.isArray(req.body?.contactIds) ? req.body.contactIds.map(Number).filter(Boolean) : [];
+    const groupIds: number[] = Array.isArray(req.body?.groupIds) ? req.body.groupIds.map(Number).filter(Boolean) : [];
+    if (groupIds.length) {
+      const rows = await db.select({ contactId: contactGroupMembers.contactId }).from(contactGroupMembers).innerJoin(contactGroups, eq(contactGroupMembers.groupId,contactGroups.id)).where(and(eq(contactGroups.ownerUserId,req.user!.id),inArray(contactGroupMembers.groupId,groupIds)));
+      contactIds.push(...rows.map(r=>r.contactId));
+    }
+    contactIds = [...new Set(contactIds)];
+    if (!contactIds.length) return res.status(400).json({ error: 'Select at least one contact or group.' });
+    if (contactIds.length > 500) return res.status(400).json({ error: 'Send to up to 500 contacts per batch.' });
+    const templateId = Number(req.body?.templateId);
+    const [template] = await db.select().from(messageTemplates).where(eq(messageTemplates.id,templateId)).limit(1);
+    if (!template || template.status !== 'APPROVED') return res.status(400).json({ error: 'Select an approved WhatsApp template.' });
+    const suppliedVars = req.body?.variables && typeof req.body.variables === 'object' ? req.body.variables : {};
+    for (let n = 2; n <= template.variableCount; n++) {
+      if (!String(suppliedVars[String(n)] ?? '').trim()) return res.status(400).json({ error: `Template variable {{${n}}} is required.` });
+    }
+    const recipients = await db.select().from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),inArray(contacts.id,contactIds)));
+    const creds = await resolveWhatsAppCredentials(req.user!.id);
+    if (!creds.isFullyConfigured) return res.status(400).json({ error: 'Connect your WhatsApp Business credentials first.' });
+    const results=[];
+    for(const contact of recipients){
+      if(!contact.optIn){ results.push({contactId:contact.id,name:contact.name,status:'SKIPPED',error:'No WhatsApp consent'}); continue; }
+      const vars: Record<string,string> = {};
+      const supplied=req.body?.variables && typeof req.body.variables==='object' ? req.body.variables : {};
+      for(const [k,v] of Object.entries(supplied)) vars[String(k)] = String(v).replace(/\{\{name\}\}/gi,contact.name);
+      if(template.variableCount>0 && !vars['1']) vars['1']=contact.name;
+      const send=await WhatsAppService.sendTemplateMessage({phoneNumberId:creds.phoneNumberId,accessToken:creds.accessToken,apiVersion:creds.apiVersion,recipientPhone:contact.phone,templateName:template.name,templateLanguage:template.language,variables:vars});
+      const status=send.success?'SENT':'FAILED';
+      await db.insert(messages).values({ownerUserId:req.user!.id,contactId:contact.id,direction:'OUTBOUND',messageType:'TEMPLATE',templateName:template.name,templateLanguage:template.language,variables:vars,whatsappMessageId:send.whatsappMessageId,status,errorCode:send.errorCode,errorMessage:send.error,sentAt:new Date(),failedAt:send.success?null:new Date()});
+      results.push({contactId:contact.id,name:contact.name,status,error:send.error});
+    }
+    res.json({success:true,total:results.length,sent:results.filter(r=>r.status==='SENT').length,failed:results.filter(r=>r.status==='FAILED').length,skipped:results.filter(r=>r.status==='SKIPPED').length,results});
+  } catch(err:any){res.status(500).json({error:err.message||'Bulk send failed.'});}
 });
 
 /* =========================================================================

@@ -6,6 +6,9 @@ import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
 import 'device_contacts_screen.dart';
+import 'groups_screen.dart';
+import 'import_contacts_screen.dart';
+import '../widgets/country_phone_field.dart';
 
 class ContactsScreen extends ConsumerStatefulWidget {
   const ContactsScreen({super.key});
@@ -113,7 +116,20 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
           SizedBox(height: 4),
           Text('Saved WishFlow contacts and contacts from your phone.', style: TextStyle(color: BusinessColors.muted)),
         ])),
-        if (source == 0) FilledButton.icon(onPressed: () => _openEditor(), icon: const Icon(Icons.add), label: const Text('Add')),
+        if (source == 0) PopupMenuButton<String>(
+          tooltip: 'Contact actions',
+          onSelected: (v) {
+            if (v == 'add') _openEditor();
+            if (v == 'import') Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImportContactsScreen()));
+            if (v == 'groups') Navigator.of(context).push(MaterialPageRoute(builder: (_) => const GroupsScreen()));
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'add', child: ListTile(leading: Icon(Icons.person_add_alt_1), title: Text('Add Contact'))),
+            PopupMenuItem(value: 'import', child: ListTile(leading: Icon(Icons.upload_file), title: Text('Bulk Import CSV'))),
+            PopupMenuItem(value: 'groups', child: ListTile(leading: Icon(Icons.groups), title: Text('Contact Groups'))),
+          ],
+          child: const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.add_circle, color: BusinessColors.green, size: 34)),
+        ),
       ]);
 
   Widget _sourceSelector() => SegmentedButton<int>(
@@ -183,6 +199,8 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
   final formKey = GlobalKey<FormState>();
   late final TextEditingController name;
   late final TextEditingController phone;
+  late final TextEditingController email;
+  String fullPhone = '';
   late final TextEditingController dob;
   late final TextEditingController notes;
   bool optIn = true;
@@ -193,7 +211,9 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
   void initState() {
     super.initState();
     name = TextEditingController(text: widget.contact?.name ?? '');
-    phone = TextEditingController(text: widget.contact?.phone.replaceFirst('+91', '') ?? '');
+    phone = TextEditingController();
+    email = TextEditingController(text: widget.contact?.email ?? '');
+    fullPhone = widget.contact?.phone ?? '';
     dob = TextEditingController(text: widget.contact?.dob ?? '');
     notes = TextEditingController(text: widget.contact?.notes ?? '');
     optIn = widget.contact?.optIn ?? true;
@@ -202,7 +222,7 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
 
   @override
   void dispose() {
-    name.dispose(); phone.dispose(); dob.dispose(); notes.dispose();
+    name.dispose(); phone.dispose(); email.dispose(); dob.dispose(); notes.dispose();
     super.dispose();
   }
 
@@ -214,13 +234,6 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
     return null;
   }
 
-  String? _phoneValidator(String? v) {
-    final digits = (v ?? '').replaceAll(RegExp(r'\D'), '');
-    if (digits.isEmpty) return 'Phone number is required';
-    if (digits.length != 10) return 'Enter a valid 10-digit Indian mobile number';
-    if (!RegExp(r'^[6-9]').hasMatch(digits)) return 'Indian mobile number must start with 6, 7, 8 or 9';
-    return null;
-  }
 
   Future<void> _pickDate() async {
     final initial = DateTime.tryParse(dob.text) ?? DateTime(1995, 1, 1);
@@ -239,10 +252,10 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
     if (!formKey.currentState!.validate()) return;
     setState(() => saving = true);
     try {
-      final digits = phone.text.replaceAll(RegExp(r'\D'), '');
       final payload = {
         'name': name.text.trim(),
-        'phone': '+91$digits',
+        'phone': fullPhone,
+        'email': email.text.trim().isEmpty ? null : email.text.trim(),
         'dob': dob.text.trim().isEmpty ? null : dob.text.trim(),
         'notes': notes.text.trim().isEmpty ? null : notes.text.trim(),
         'optIn': optIn,
@@ -274,13 +287,9 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
               const SizedBox(height: 16),
               TextFormField(controller: name, textCapitalization: TextCapitalization.words, maxLength: 80, decoration: const InputDecoration(labelText: 'Full Name *', prefixIcon: Icon(Icons.person_outline)), validator: _nameValidator),
               const SizedBox(height: 12),
-              TextFormField(
-                controller: phone,
-                keyboardType: TextInputType.phone,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
-                decoration: const InputDecoration(labelText: 'Phone Number *', prefixText: '+91  ', prefixIcon: Icon(Icons.phone_outlined)),
-                validator: _phoneValidator,
-              ),
+              CountryPhoneField(controller: phone, initialE164: widget.contact?.phone, onChangedE164: (v) => fullPhone = v),
+              const SizedBox(height: 12),
+              TextFormField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email (optional)', prefixIcon: Icon(Icons.email_outlined)), validator: (v) { final x=(v??'').trim(); if(x.isNotEmpty && !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(x)) return 'Enter a valid email'; return null; }),
               const SizedBox(height: 12),
               TextFormField(
                 controller: dob,
@@ -331,6 +340,7 @@ class ContactDetailsScreen extends StatelessWidget {
             const Text('Contact Information', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
             const SizedBox(height: 12),
             _row(Icons.phone_outlined, 'Phone Number', contact.phone),
+            if (contact.email != null && contact.email!.isNotEmpty) _row(Icons.email_outlined, 'Email', contact.email!),
             if (contact.dob != null && contact.dob!.isNotEmpty) _row(Icons.calendar_month_outlined, 'Date of Birth', contact.dob!),
             _row(Icons.verified_outlined, 'WhatsApp Consent', contact.optIn ? 'Opted in' : 'Not opted in'),
             _row(Icons.cake_outlined, 'Birthday Automation', contact.birthdayAutomationEnabled ? 'Enabled' : 'Disabled'),

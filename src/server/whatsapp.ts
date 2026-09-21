@@ -41,6 +41,15 @@ export interface MetaRawTemplate {
 }
 
 export class WhatsAppService {
+  static async createTemplate(params: { businessAccountId: string; accessToken: string; apiVersion?: string; name: string; category: string; language: string; body: string }): Promise<{success:boolean; id?:string; status?:string; error?:string}> {
+    try {
+      const url = `https://graph.facebook.com/${params.apiVersion || 'v21.0'}/${encodeURIComponent(params.businessAccountId)}/message_templates`;
+      const response = await fetch(url, { method:'POST', headers:{ Authorization:`Bearer ${params.accessToken}`, 'Content-Type':'application/json' }, body:JSON.stringify({ name:params.name, category:params.category, language:params.language, components:[{type:'BODY',text:params.body}] }) });
+      const data = await response.json();
+      if(!response.ok || data.error){ const f=this.formatMetaErrorMessage(data.error,response.status); return {success:false,error:f.message}; }
+      return {success:true,id:data.id,status:data.status || 'PENDING'};
+    } catch(err:any){ return {success:false,error:err.message || 'Unable to create WhatsApp template.'}; }
+  }
   /**
    * Cleans and normalizes phone number to WhatsApp recipient format (digits only, no + or spaces)
    */

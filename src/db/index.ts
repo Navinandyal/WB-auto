@@ -141,15 +141,33 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           opt_in BOOLEAN NOT NULL DEFAULT TRUE,
           dob TEXT,
           birthday_automation_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+          email TEXT,
           notes TEXT,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email TEXT;
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS dob TEXT;
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS birthday_automation_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+        CREATE TABLE IF NOT EXISTS contact_groups (
+          id SERIAL PRIMARY KEY,
+          owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          description TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS contact_group_members (
+          id SERIAL PRIMARY KEY,
+          group_id INTEGER NOT NULL REFERENCES contact_groups(id) ON DELETE CASCADE,
+          contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          UNIQUE(group_id, contact_id)
+        );
         CREATE TABLE IF NOT EXISTS message_templates (
           id SERIAL PRIMARY KEY,
+          owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
           meta_template_id TEXT UNIQUE,
           name TEXT NOT NULL,
           language TEXT NOT NULL,
@@ -161,6 +179,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
         CREATE TABLE IF NOT EXISTS automations (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,

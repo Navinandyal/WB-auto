@@ -45,9 +45,15 @@ class AdminOverview {
 }
 
 class Contact {
-  Contact({required this.id, required this.name, required this.phone, required this.optIn, this.dob, required this.birthdayAutomationEnabled, this.notes});
-  final int id; final String name, phone; final bool optIn, birthdayAutomationEnabled; final String? dob, notes;
-  factory Contact.fromJson(Map<String,dynamic> j) => Contact(id:_i(j['id']), name:_s(j['name']), phone:_s(j['phone']), optIn:_b(j['optIn'] ?? j['opt_in'], true), dob:j['dob']?.toString(), birthdayAutomationEnabled:_b(j['birthdayAutomationEnabled'] ?? j['birthday_automation_enabled'], true), notes:j['notes']?.toString());
+  Contact({required this.id, required this.name, required this.phone, required this.optIn, this.email, this.dob, required this.birthdayAutomationEnabled, this.notes});
+  final int id; final String name, phone; final bool optIn, birthdayAutomationEnabled; final String? email, dob, notes;
+  factory Contact.fromJson(Map<String,dynamic> j) => Contact(id:_i(j['id']), name:_s(j['name']), phone:_s(j['phone']), optIn:_b(j['optIn'] ?? j['opt_in'], true), email:j['email']?.toString(), dob:j['dob']?.toString(), birthdayAutomationEnabled:_b(j['birthdayAutomationEnabled'] ?? j['birthday_automation_enabled'], true), notes:j['notes']?.toString());
+}
+
+class ContactGroup {
+  ContactGroup({required this.id, required this.name, required this.memberCount, this.description});
+  final int id, memberCount; final String name; final String? description;
+  factory ContactGroup.fromJson(Map<String,dynamic> j) => ContactGroup(id:_i(j['id']), name:_s(j['name']), memberCount:_i(j['memberCount'] ?? j['member_count']), description:j['description']?.toString());
 }
 
 class MessageTemplate {

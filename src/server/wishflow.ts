@@ -217,15 +217,38 @@ export class WishflowService {
 
     const templateVariables: Record<string, string> = {
       '1': contact.name,
-      '2': String(bday.ageTurning),
       _isBirthday: 'true',
       _birthdayYear: String(targetYear),
       _contactName: contact.name,
       _customMessage: personalizedMessage,
     };
 
-    // 6. Schedule automation using the existing scheduler table/store
-    const effectiveTemplateId = settings.defaultTemplateId || 1;
+    // 6. Resolve the approved Birthday template dynamically. Older builds used
+    // a hard-coded template id, which could point at a removed demo template.
+    let effectiveTemplateId = 0;
+    if (isDatabaseConnected) {
+      const candidates = await db
+        .select({ id: messageTemplates.id, ownerUserId: messageTemplates.ownerUserId })
+        .from(messageTemplates)
+        .where(and(
+          eq(messageTemplates.status, 'APPROVED'),
+          or(
+            eq(messageTemplates.name, 'birthday'),
+            eq(messageTemplates.name, 'happy_birthday_wishes'),
+          ),
+          or(
+            isNull(messageTemplates.ownerUserId),
+            eq(messageTemplates.ownerUserId, contact.ownerUserId),
+          ),
+        ));
+      const chosen = candidates.find((t) => t.ownerUserId === contact.ownerUserId)
+        || candidates.find((t) => t.ownerUserId == null);
+      effectiveTemplateId = chosen?.id || 0;
+    }
+
+    if (!effectiveTemplateId) {
+      return { scheduled: false, message: 'No approved Birthday template is available' };
+    }
 
     if (isDatabaseConnected) {
       try {
