@@ -57,8 +57,8 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
     try {
       final result = await ref.read(apiClientProvider).post(
-        '/api/auth/forgot-password',
-        data: {'identifier': _identifier.text.trim()},
+        '/api/auth/forgot-password/request',
+        data: {'mobile': _identifier.text.trim()},
       );
       final map = (result as Map).cast<String, dynamic>();
       final resetId = (map['resetId'] ?? '').toString();
@@ -91,7 +91,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     });
 
     try {
-      await ref.read(apiClientProvider).post('/api/auth/reset-password', data: {
+      await ref.read(apiClientProvider).post('/api/auth/forgot-password/reset', data: {
         'resetId': _resetId,
         'code': _code.text.trim(),
         'newPassword': _newPassword.text,
@@ -166,7 +166,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Enter the mobile number or optional email registered with your business account.',
+              'Enter the mobile number registered with your business account.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xFF64739B), height: 1.45),
             ),
@@ -175,20 +175,12 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
               controller: _identifier,
               enabled: !_busy,
               textInputAction: TextInputAction.done,
-              decoration: _input('Mobile number or email', Icons.person_search_outlined),
+              decoration: _input('Mobile number', Icons.phone_outlined),
               validator: (value) {
                 final text = value?.trim() ?? '';
-                if (text.isEmpty) return 'Enter your registered mobile number or email';
-                if (text.contains('@')) {
-                  if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(text)) {
-                    return 'Enter a valid email address';
-                  }
-                } else {
-                  final digits = text.replaceAll(RegExp(r'\D'), '');
-                  if (digits.length < 10 || digits.length > 15) {
-                    return 'Enter a valid mobile number';
-                  }
-                }
+                if (text.isEmpty) return 'Enter your registered mobile number';
+                final digits = text.replaceAll(RegExp(r'\D'), '');
+                if (digits.length < 10 || digits.length > 15) return 'Enter a valid mobile number';
                 return null;
               },
               onFieldSubmitted: (_) => _requestCode(),

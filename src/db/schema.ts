@@ -33,6 +33,16 @@ export const passwordResetRequests = pgTable('password_reset_requests', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Persistent refresh sessions. Raw refresh tokens are never stored; only SHA-256 hashes.
+export const refreshSessions = pgTable('refresh_sessions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  revokedAt: timestamp('revoked_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // WhatsApp Account / Settings
 export const whatsappAccounts = pgTable('whatsapp_accounts', {
   id: serial('id').primaryKey(),
@@ -44,10 +54,14 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
   accessToken: text('access_token').notNull(),
   webhookVerifyToken: text('webhook_verify_token').notNull(),
   apiVersion: text('api_version').default('v21.0').notNull(),
+  businessPhone: text('business_phone'),
   displayPhoneNumber: text('display_phone_number'),
   verifiedName: text('verified_name'),
   qualityRating: text('quality_rating'),
-  status: text('status').default('CONNECTED'), // CONNECTED, DISCONNECTED, ERROR
+  connectionStatus: text('connection_status').default('SAVED').notNull(), // SAVED, CONNECTED, CONNECTION_ERROR
+  lastConnectionError: text('last_connection_error'),
+  metaBusinessId: text('meta_business_id'),
+  status: text('status').default('DISCONNECTED'), // legacy compatibility
   lastTestedAt: timestamp('last_tested_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),

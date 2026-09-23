@@ -47,7 +47,7 @@ export async function ensureFixedAdminUser() {
       name,
       role: 'admin',
       isActive: true,
-      approvalStatus: 'APPROVED',
+      approvalStatus: 'ACTIVE',
       approvedAt: new Date(),
       passwordHash,
     }).where(eq(users.id, byUid[0].id)).returning();
@@ -62,7 +62,7 @@ export async function ensureFixedAdminUser() {
       name,
       role: 'admin',
       isActive: true,
-      approvalStatus: 'APPROVED',
+      approvalStatus: 'ACTIVE',
       approvedAt: new Date(),
       passwordHash,
     }).where(eq(users.id, byPhone[0].id)).returning();
@@ -77,7 +77,7 @@ export async function ensureFixedAdminUser() {
     name,
     role: 'admin',
     isActive: true,
-    approvalStatus: 'APPROVED',
+    approvalStatus: 'ACTIVE',
     approvedAt: new Date(),
   }).returning();
   return inserted[0];

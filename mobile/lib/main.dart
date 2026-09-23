@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'providers/providers.dart';
 import 'screens/admin_shell.dart';
-import 'screens/business_credential_gate.dart';
+import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'theme/business_theme.dart';
 
@@ -27,7 +27,7 @@ class App extends ConsumerWidget {
               ? const LoginScreen()
               : user.isAdmin
                   ? const AdminShell()
-                  : const BusinessCredentialGate(),
+                  : const HomeShell(),
     );
   }
 }

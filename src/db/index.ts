@@ -113,6 +113,15 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS password_reset_requests_user_idx ON password_reset_requests(user_id);
+        CREATE TABLE IF NOT EXISTS refresh_sessions (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TIMESTAMP NOT NULL,
+          revoked_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS refresh_sessions_user_idx ON refresh_sessions(user_id);
         CREATE TABLE IF NOT EXISTS whatsapp_accounts (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -123,16 +132,32 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           access_token TEXT NOT NULL DEFAULT '',
           webhook_verify_token TEXT NOT NULL DEFAULT 'wa_verify_secret',
           api_version TEXT NOT NULL DEFAULT 'v21.0',
+          business_phone TEXT,
           display_phone_number TEXT,
           verified_name TEXT,
           quality_rating TEXT,
+          connection_status TEXT NOT NULL DEFAULT 'SAVED',
+          last_connection_error TEXT,
+          meta_business_id TEXT,
           status TEXT NOT NULL DEFAULT 'DISCONNECTED',
           last_tested_at TIMESTAMP,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS business_phone TEXT;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS connection_status TEXT NOT NULL DEFAULT 'SAVED';
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS last_connection_error TEXT;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS meta_business_id TEXT;
         CREATE UNIQUE INDEX IF NOT EXISTS whatsapp_accounts_owner_user_unique_idx ON whatsapp_accounts(owner_user_id) WHERE owner_user_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS platform_meta_settings (
+          id INTEGER PRIMARY KEY DEFAULT 1,
+          meta_app_id TEXT NOT NULL DEFAULT '',
+          meta_app_secret TEXT NOT NULL DEFAULT '',
+          embedded_signup_config_id TEXT NOT NULL DEFAULT '',
+          graph_api_version TEXT NOT NULL DEFAULT 'v21.0',
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS contacts (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -228,6 +253,10 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           error_message TEXT,
           executed_at TIMESTAMP DEFAULT NOW()
         );
+        CREATE INDEX IF NOT EXISTS contacts_owner_phone_idx ON contacts(owner_user_id, phone);
+        CREATE INDEX IF NOT EXISTS automations_status_schedule_idx ON automations(status, scheduled_at);
+        CREATE INDEX IF NOT EXISTS messages_owner_created_idx ON messages(owner_user_id, created_at);
+        CREATE INDEX IF NOT EXISTS templates_owner_status_idx ON message_templates(owner_user_id, status);
         CREATE TABLE IF NOT EXISTS audit_logs (
           id SERIAL PRIMARY KEY,
           action TEXT NOT NULL,

@@ -11,7 +11,7 @@ export interface ResolvedWhatsAppCredentials {
   metaAppSecret: string;
   webhookVerifyToken: string;
   apiVersion: string;
-  status: 'CONNECTED' | 'DISCONNECTED';
+  status: 'SAVED' | 'CONNECTED' | 'CONNECTION_ERROR' | 'NOT_CONNECTED';
   hasToken: boolean;
   hasPhoneId: boolean;
   isFullyConfigured: boolean;
@@ -46,7 +46,7 @@ export async function resolveWhatsAppCredentials(ownerUserId: number): Promise<R
     metaAppSecret,
     webhookVerifyToken,
     apiVersion,
-    status: isFullyConfigured ? 'CONNECTED' : 'DISCONNECTED',
+    status: acc?.connectionStatus || (isFullyConfigured ? 'SAVED' : 'NOT_CONNECTED'),
     hasToken,
     hasPhoneId,
     isFullyConfigured,

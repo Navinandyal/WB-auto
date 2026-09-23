@@ -315,7 +315,7 @@ export class WhatsAppService {
       templateName,
       templateLanguage,
       variables,
-      fallbackToHelloWorldIfNotFound = true,
+      fallbackToHelloWorldIfNotFound = false,
     } = params;
 
     const normalizedRecipient = this.normalizePhoneForWhatsApp(recipientPhone);

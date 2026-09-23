@@ -150,6 +150,18 @@ class AutomationWorker {
     for (const job of dueJobs) {
       const { automation, contact, template } = job;
 
+      // Hard tenant boundary: an automation may only use contacts/templates owned by
+      // the same business account. This prevents accidental cross-business sends even
+      // if database rows were corrupted or an ID was tampered with.
+      if (automation.ownerUserId !== contact.ownerUserId || automation.ownerUserId !== template.ownerUserId) {
+        const errorMsg = 'Tenant ownership mismatch. Automation, contact and template must belong to the same business.';
+        await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+        await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+        failureCount++;
+        details.push({ id: automation.id, contactName: contact.name, status: 'FAILED', error: errorMsg });
+        continue;
+      }
+
       // Lock job
       const lockResult = await db
         .update(automations)

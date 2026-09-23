@@ -7,6 +7,7 @@ import '../widgets/common.dart';
 import 'bulk_send_screen.dart';
 import 'groups_screen.dart';
 import 'import_contacts_screen.dart';
+import 'whatsapp_connection_screen.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -36,22 +37,19 @@ class DashboardScreen extends ConsumerWidget {
               const Text("Here's what's happening with your business today.", style: TextStyle(color: BusinessColors.muted, fontSize: 15)),
               const SizedBox(height: 18),
               Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(children: [
-                    const SoftIcon(Icons.chat_rounded),
-                    const SizedBox(width: 12),
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        const Text('WhatsApp Connected', style: TextStyle(fontWeight: FontWeight.w800, color: BusinessColors.ink)),
-                        const SizedBox(width: 8),
-                        Container(width: 8, height: 8, decoration: BoxDecoration(color: data.configured ? Colors.green : Colors.orange, shape: BoxShape.circle)),
-                      ]),
-                      const SizedBox(height: 4),
-                      Text(data.configured ? 'Active' : 'Setup required', style: TextStyle(color: data.configured ? BusinessColors.green : Colors.orange.shade700)),
-                    ])),
-                    const Icon(Icons.chevron_right_rounded, color: BusinessColors.muted),
-                  ]),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  leading: const SoftIcon(Icons.chat_rounded),
+                  title: Text(
+                    data.connectionStatus == 'CONNECTED' ? 'WhatsApp Connected' : data.connectionStatus == 'SAVED' ? 'WhatsApp Details Saved' : data.connectionStatus == 'CONNECTION_ERROR' ? 'WhatsApp Connection Error' : 'WhatsApp Business not connected',
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: BusinessColors.ink),
+                  ),
+                  subtitle: Text(
+                    data.connectionStatus == 'CONNECTED' ? 'Meta connection verified' : data.connectionStatus == 'SAVED' ? 'Credentials saved • verification pending' : data.connectionStatus == 'CONNECTION_ERROR' ? 'Saved credentials kept • tap to fix' : 'Connect WhatsApp Business to enable automation.',
+                    style: TextStyle(color: data.connectionStatus == 'CONNECTED' ? BusinessColors.green : data.connectionStatus == 'CONNECTION_ERROR' ? Colors.redAccent : Colors.orange.shade700),
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: BusinessColors.muted),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const WhatsAppConnectionScreen())),
                 ),
               ),
               const SizedBox(height: 14),

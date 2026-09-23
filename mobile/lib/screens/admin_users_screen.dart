@@ -19,7 +19,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
       await ref.read(apiClientProvider).post('/api/admin/users/${u.id}/approval', data: {'status': status});
       ref.invalidate(businessUsersProvider);
       ref.invalidate(adminOverviewProvider);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(status == 'APPROVED' ? '${u.name} approved' : '${u.name} rejected')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(status == 'ACTIVE' ? '${u.name} approved' : status == 'SUSPENDED' ? '${u.name} suspended' : '${u.name} rejected')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e is ApiException ? e.message : '$e')));
     }
@@ -52,7 +52,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
                 onChanged: (v) => setState(() => search = v),
               ),
               const SizedBox(height: 12),
-              SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ['ALL','PENDING','APPROVED','REJECTED'].map((s) => Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(s == 'ALL' ? 'All' : s[0] + s.substring(1).toLowerCase()), selected: filter == s, onSelected: (_) => setState(() => filter = s)))).toList())),
+              SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ['ALL','PENDING_APPROVAL','ACTIVE','REJECTED','SUSPENDED'].map((s) => Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(s == 'ALL' ? 'All' : s[0] + s.substring(1).toLowerCase()), selected: filter == s, onSelected: (_) => setState(() => filter = s)))).toList())),
               const SizedBox(height: 14),
               if (items.isEmpty)
                 const Card(child: Padding(padding: EdgeInsets.all(28), child: Center(child: Text('No matching business accounts.'))))
@@ -91,7 +91,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
             Row(children: [
               Expanded(child: OutlinedButton.icon(onPressed: () => _setApproval(u, 'REJECTED'), icon: const Icon(Icons.close), label: const Text('Reject'))),
               const SizedBox(width: 10),
-              Expanded(child: FilledButton.icon(style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0867FF)), onPressed: () => _setApproval(u, 'APPROVED'), icon: const Icon(Icons.check), label: const Text('Approve'))),
+              Expanded(child: FilledButton.icon(style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0867FF)), onPressed: () => _setApproval(u, 'ACTIVE'), icon: const Icon(Icons.check), label: const Text('Approve'))),
             ]),
           ] else ...[
             const SizedBox(height: 12),
@@ -99,8 +99,21 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
               Icon(u.isActive ? Icons.check_circle : Icons.block, size: 17, color: u.isActive ? const Color(0xFF0F9D67) : Colors.red),
               const SizedBox(width: 6),
               Text(u.isActive ? 'Login enabled' : 'Login disabled', style: const TextStyle(color: Color(0xFF667695))),
-              const Spacer(),
-              if (u.isRejected) TextButton(onPressed: () => _setApproval(u, 'PENDING'), child: const Text('Move to pending')),
+            ]),
+            const SizedBox(height: 10),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              if (u.approvalStatus == 'ACTIVE') OutlinedButton.icon(
+                onPressed: () => _setApproval(u, 'SUSPENDED'),
+                icon: const Icon(Icons.pause_circle_outline),
+                label: const Text('Suspend'),
+              ),
+              if (u.approvalStatus == 'SUSPENDED') FilledButton.icon(
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0F9D67)),
+                onPressed: () => _setApproval(u, 'ACTIVE'),
+                icon: const Icon(Icons.play_circle_outline),
+                label: const Text('Reactivate'),
+              ),
+              if (u.isRejected) TextButton(onPressed: () => _setApproval(u, 'PENDING_APPROVAL'), child: const Text('Move to pending')),
             ]),
           ],
         ]),

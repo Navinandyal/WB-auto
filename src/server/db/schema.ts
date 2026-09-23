@@ -11,12 +11,42 @@ export const users = pgTable('users', {
   name: text('name'),
   role: text('role').default('business_user').notNull(),
   isActive: boolean('is_active').default(true).notNull(),
+  approvalStatus: text('approval_status').default('PENDING').notNull(), // PENDING, APPROVED, REJECTED
+  businessName: text('business_name'),
+  businessAddress: text('business_address'),
+  approvedAt: timestamp('approved_at'),
+  approvedById: integer('approved_by_id'),
+  lastLoginAt: timestamp('last_login_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+
+
+// Short-lived password reset verification requests.
+export const passwordResetRequests = pgTable('password_reset_requests', {
+  id: serial('id').primaryKey(),
+  resetId: text('reset_id').notNull().unique(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  codeHash: text('code_hash').notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  usedAt: timestamp('used_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Persistent refresh sessions. Raw refresh tokens are never stored; only SHA-256 hashes.
+export const refreshSessions = pgTable('refresh_sessions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  revokedAt: timestamp('revoked_at'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 // WhatsApp Account / Settings
 export const whatsappAccounts = pgTable('whatsapp_accounts', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull().unique(),
   metaAppId: text('meta_app_id').notNull(),
   metaAppSecret: text('meta_app_secret').notNull(),
   businessAccountId: text('business_account_id').notNull(),
@@ -24,10 +54,14 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
   accessToken: text('access_token').notNull(),
   webhookVerifyToken: text('webhook_verify_token').notNull(),
   apiVersion: text('api_version').default('v21.0').notNull(),
+  businessPhone: text('business_phone'),
   displayPhoneNumber: text('display_phone_number'),
   verifiedName: text('verified_name'),
   qualityRating: text('quality_rating'),
-  status: text('status').default('CONNECTED'), // CONNECTED, DISCONNECTED, ERROR
+  connectionStatus: text('connection_status').default('SAVED').notNull(), // SAVED, CONNECTED, CONNECTION_ERROR
+  lastConnectionError: text('last_connection_error'),
+  metaBusinessId: text('meta_business_id'),
+  status: text('status').default('DISCONNECTED'), // legacy compatibility
   lastTestedAt: timestamp('last_tested_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
@@ -36,19 +70,40 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
 // Contacts
 export const contacts = pgTable('contacts', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   name: text('name').notNull(),
   phone: text('phone').notNull(), // normalized E.164 without spaces e.g. +919876543210
   optIn: boolean('opt_in').default(true).notNull(),
   dob: text('dob'), // YYYY-MM-DD
   birthdayAutomationEnabled: boolean('birthday_automation_enabled').default(true).notNull(),
+  email: text('email'),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+
+// Business-owned contact groups for bulk messaging and automations.
+export const contactGroups = pgTable('contact_groups', {
+  id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const contactGroupMembers = pgTable('contact_group_members', {
+  id: serial('id').primaryKey(),
+  groupId: integer('group_id').references(() => contactGroups.id, { onDelete: 'cascade' }).notNull(),
+  contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Approved WhatsApp Templates
 export const messageTemplates = pgTable('message_templates', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
   metaTemplateId: text('meta_template_id').unique(),
   name: text('name').notNull(),
   language: text('language').notNull(),
@@ -64,6 +119,7 @@ export const messageTemplates = pgTable('message_templates', {
 // Automations (Scheduled WhatsApp Message tasks)
 export const automations = pgTable('automations', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
   templateId: integer('template_id').references(() => messageTemplates.id, { onDelete: 'cascade' }).notNull(),
   variables: jsonb('variables').$type<Record<string, string>>().notNull(), // { "1": "Rahul", "2": "Appointment #123" }
@@ -80,6 +136,7 @@ export const automations = pgTable('automations', {
 // Sent WhatsApp Messages record
 export const messages = pgTable('messages', {
   id: serial('id').primaryKey(),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   automationId: integer('automation_id').references(() => automations.id, { onDelete: 'set null' }),
   contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
   direction: text('direction').default('OUTBOUND').notNull(), // OUTBOUND, INBOUND

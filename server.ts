@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { randomBytes, randomInt } from 'crypto';
 import path from 'path';
-import { db, initDatabaseSchema, isDatabaseConnected } from './src/db/index.ts';
+import { db, initDatabaseSchema, isDatabaseConnected, pool } from './src/db/index.ts';
 import { localStore } from './src/db/localStore.ts';
 import {
   users,
@@ -15,15 +15,16 @@ import {
   messages,
   auditLogs,
   passwordResetRequests,
+  refreshSessions,
 } from './src/db/schema.ts';
 import { eq, desc, sql, and, count, inArray, or, like, gt, isNull } from 'drizzle-orm';
 import { requireAuth, requireAdmin, AuthRequest } from './src/middleware/auth.ts';
 import { ensureFixedAdminUser } from './src/db/users.ts';
-import { createSessionToken, hashPassword, normalizeLoginPhone, verifyPassword } from './src/lib/password-auth.ts';
+import { createAccessToken, createRefreshToken, createPurposeToken, verifyPurposeToken, hashPassword, hashRefreshToken, normalizeLoginPhone, verifyPassword } from './src/lib/password-auth.ts';
 import { WhatsAppService } from './src/server/whatsapp.ts';
 import { automationWorker } from './src/server/worker.ts';
 import { resolveWhatsAppCredentials, encryptedCredentialValues } from './src/server/credentials.ts';
-import { decryptSecret } from './src/server/credential-crypto.ts';
+import { decryptSecret, encryptSecret } from './src/server/credential-crypto.ts';
 import { WishflowService } from './src/server/wishflow.ts';
 
 const app = express();
@@ -59,59 +60,7 @@ initDatabaseSchema()
           inArray(messageTemplates.metaTemplateId, legacyDemoMetaIds),
         ));
 
-        // The user supplied this Birthday template as an already-approved Meta
-        // template. Keep exactly one platform reference for it, with the real
-        // template name used for sending: `birthday`. Business-synced Meta
-        // templates still override/appear alongside this only when they are real.
-        await db.insert(messageTemplates).values({
-          ownerUserId: null,
-          metaTemplateId: 'approved_reference_birthday',
-          name: 'birthday',
-          language: 'en_US',
-          category: 'MARKETING',
-          status: 'APPROVED',
-          components: [{
-            type: 'BODY',
-            text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
-          }],
-          variableCount: 1,
-          lastSyncedAt: new Date(),
-          updatedAt: new Date(),
-        }).onConflictDoUpdate({
-          target: messageTemplates.metaTemplateId,
-          set: {
-            name: 'birthday',
-            language: 'en_US',
-            category: 'MARKETING',
-            status: 'APPROVED',
-            components: [{
-              type: 'BODY',
-              text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
-            }],
-            variableCount: 1,
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        });
-        // The supplied screenshot confirms the Birthday template is approved.
-        // Upgrade any older pending copy of this same template so the UI does not
-        // keep showing PENDING_APPROVAL from previous demo/build data.
-        await db.update(messageTemplates).set({
-          status: 'APPROVED',
-          category: 'MARKETING',
-          language: 'en_US',
-          components: [{
-            type: 'BODY',
-            text: 'Happy Birthday {{1}}! 🎂🎉 Wishing you a wonderful celebration and a fantastic year ahead filled with happiness, health, and success! Warmest regards from our team.',
-          }],
-          variableCount: 1,
-          updatedAt: new Date(),
-        }).where(or(
-          eq(messageTemplates.name, 'birthday'),
-          eq(messageTemplates.name, 'happy_birthday_wishes'),
-        ));
-
-        console.log('[WhatsApp] Legacy demo templates removed; approved Birthday template is ready.');
+        console.log('[WhatsApp] Legacy demo templates removed. Real templates must come from each business WABA.');
       } catch (err: any) {
         console.warn('Notice seeding env WhatsApp credentials/templates to DB:', err?.message);
       }
@@ -172,9 +121,9 @@ app.post('/api/auth/register', async (req, res) => {
       name,
       businessName,
       businessAddress: businessAddress || null,
-      role: 'business_user',
+      role: 'BUSINESS_OWNER',
       isActive: true,
-      approvalStatus: 'PENDING',
+      approvalStatus: 'PENDING_APPROVAL',
     }).returning({
       id: users.id,
       phone: users.phone,
@@ -192,8 +141,8 @@ app.post('/api/auth/register', async (req, res) => {
 
     res.status(201).json({
       success: true,
-      status: 'PENDING',
-      message: 'Registration submitted. Please wait for administrator approval before signing in.',
+      status: 'PENDING_APPROVAL',
+      message: 'Registration submitted successfully. Please wait for administrator approval.',
       user: created,
     });
   } catch (err: any) {
@@ -202,48 +151,76 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Mobile number + password only. No Google/OAuth/bypass login.
-app.post('/api/auth/mobile-login', async (req, res) => {
+// Mobile number + password only. WhatsApp connection is NOT a login requirement.
+async function mobileLoginHandler(req: any, res: any) {
   try {
     if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected. Login requires PostgreSQL.' });
-
     const phone = normalizeLoginPhone(req.body?.mobile || req.body?.phone || '');
     const password = String(req.body?.password || '');
+    const rememberMe = req.body?.rememberMe !== false;
     if (!phone || !password) return res.status(400).json({ error: 'Mobile number and password are required.' });
-
     const [account] = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
     if (!account || !account.passwordHash || !verifyPassword(password, account.passwordHash)) {
       return res.status(401).json({ code: 'INVALID_CREDENTIALS', error: 'Invalid mobile number or password.' });
     }
-    if (!account.isActive) {
-      return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'This account has been disabled by the administrator.' });
-    }
+    const status = String(account.approvalStatus || '').toUpperCase();
     if (account.role !== 'admin') {
-      if (account.approvalStatus === 'PENDING') {
-        return res.status(403).json({ code: 'ACCOUNT_PENDING', error: 'Your account is waiting for admin approval. Please try again after approval.' });
-      }
-      if (account.approvalStatus === 'REJECTED') {
-        return res.status(403).json({ code: 'ACCOUNT_REJECTED', error: 'Your registration was not approved. Please contact the administrator.' });
-      }
+      if (status === 'PENDING' || status === 'PENDING_APPROVAL') return res.status(403).json({ code: 'ACCOUNT_PENDING', error: 'Your account is waiting for administrator approval.' });
+      if (status === 'REJECTED') return res.status(403).json({ code: 'ACCOUNT_REJECTED', error: 'Your registration was rejected. Please contact support.' });
+      if (status === 'SUSPENDED' || !account.isActive) return res.status(403).json({ code: 'ACCOUNT_SUSPENDED', error: 'Your account is suspended. Please contact support.' });
+      if (status !== 'ACTIVE' && status !== 'APPROVED') return res.status(403).json({ code: 'ACCOUNT_NOT_ACTIVE', error: 'Your account is not active. Please contact support.' });
+    } else if (!account.isActive) {
+      return res.status(403).json({ code: 'ACCOUNT_SUSPENDED', error: 'Your account is suspended. Please contact support.' });
     }
-
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, account.id));
-    const user = {
-      id: account.id,
-      uid: account.uid,
-      phone: account.phone || phone,
-      email: account.email,
-      name: account.name || 'User',
-      role: account.role,
-      businessName: account.businessName || '',
-      approvalStatus: account.role === 'admin' ? 'APPROVED' : account.approvalStatus,
-    };
-    const token = createSessionToken(user);
-    res.json({ success: true, token, user });
+    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || phone, email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
+    const accessToken = createAccessToken(user);
+    const refreshToken = createRefreshToken();
+    await db.insert(refreshSessions).values({ userId: account.id, tokenHash: hashRefreshToken(refreshToken), expiresAt: new Date(Date.now() + (rememberMe ? 30 : 1) * 24 * 60 * 60 * 1000) });
+    let whatsappConnection: any = { exists: false, credentialsStatus: 'NOT_SAVED', connectionStatus: 'NOT_CONNECTED' };
+    if (account.role !== 'admin') {
+      const [wa] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, account.id)).limit(1);
+      if (wa) whatsappConnection = {
+        exists: true,
+        credentialsStatus: 'SAVED',
+        connectionStatus: wa.connectionStatus || 'SAVED',
+        businessAccountId: wa.businessAccountId || '',
+        phoneNumberId: wa.phoneNumberId || '',
+        displayPhoneNumber: wa.displayPhoneNumber || wa.businessPhone || '',
+      };
+    }
+    res.json({ success: true, accessToken, refreshToken, token: accessToken, expiresIn: 900, rememberMe, user, whatsappConnection });
   } catch (err: any) {
     console.error('Mobile login error:', err);
     res.status(500).json({ error: 'Failed to authenticate user.' });
   }
+}
+app.post('/api/auth/login', mobileLoginHandler);
+app.post('/api/auth/mobile-login', mobileLoginHandler);
+
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const refreshToken = String(req.body?.refreshToken || '').trim();
+    if (!refreshToken) return res.status(400).json({ error: 'Refresh token is required.' });
+    const [session] = await db.select().from(refreshSessions).where(and(eq(refreshSessions.tokenHash, hashRefreshToken(refreshToken)), isNull(refreshSessions.revokedAt), gt(refreshSessions.expiresAt, new Date()))).limit(1);
+    if (!session) return res.status(401).json({ error: 'Refresh session is invalid or expired.' });
+    const [account] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
+    if (!account || !account.isActive) return res.status(401).json({ error: 'User session is no longer active.' });
+    const status = String(account.approvalStatus || '').toUpperCase();
+    if (account.role !== 'admin' && !['ACTIVE','APPROVED'].includes(status)) return res.status(403).json({ error: 'Account approval is required.' });
+    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || '', email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
+    res.json({ accessToken: createAccessToken(user), expiresIn: 900, user });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to refresh session.' }); }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const refreshToken = String(req.body?.refreshToken || '').trim();
+    if (refreshToken) await db.update(refreshSessions).set({ revokedAt: new Date() }).where(eq(refreshSessions.tokenHash, hashRefreshToken(refreshToken)));
+    // Logout revokes only this app session. Business-owned data, including the encrypted
+    // WhatsApp connection/access token, remains stored on the backend for the same account.
+    res.json({ success: true, sessionEnded: true, whatsappCredentialsPreserved: true });
+  } catch { res.json({ success: true }); }
 });
 
 
@@ -347,18 +324,47 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
+
+// Production endpoint aliases used by the Flutter client.
+app.post('/api/auth/forgot-password/request', async (req, res) => {
+  try {
+    const phone = normalizeLoginPhone(req.body?.mobile || req.body?.phone || '');
+    if (!phone) return res.status(400).json({ error: 'Enter a valid mobile number.' });
+    const [account] = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
+    if (!account) return res.status(404).json({ error: 'Mobile number not found.' });
+    const resetId = randomBytes(24).toString('hex'); const code = String(randomInt(100000, 1000000));
+    await db.insert(passwordResetRequests).values({ resetId, userId: account.id, codeHash: hashPassword(code), expiresAt: new Date(Date.now() + 15*60*1000) });
+    res.json({ success: true, resetId, message: 'Reset code sent.', ...(process.env.NODE_ENV === 'production' ? {} : { verificationCode: code }) });
+  } catch { res.status(500).json({ error: 'Unable to start password reset.' }); }
+});
+app.post('/api/auth/forgot-password/reset', async (req, res) => {
+  try {
+    const resetId=String(req.body?.resetId||'').trim(), code=String(req.body?.code||req.body?.otp||'').trim(), newPassword=String(req.body?.newPassword||'');
+    if(!/^\d{6}$/.test(code)) return res.status(400).json({error:'Invalid reset code.'});
+    if(newPassword.length<8) return res.status(400).json({error:'Password must be at least 8 characters.'});
+    const [r]=await db.select().from(passwordResetRequests).where(and(eq(passwordResetRequests.resetId,resetId),isNull(passwordResetRequests.usedAt))).limit(1);
+    if(!r) return res.status(400).json({error:'Invalid reset code.'});
+    if(r.expiresAt <= new Date()) return res.status(400).json({error:'Reset code expired.'});
+    if(!verifyPassword(code,r.codeHash)) return res.status(400).json({error:'Invalid reset code.'});
+    await db.update(users).set({passwordHash:hashPassword(newPassword)}).where(eq(users.id,r.userId));
+    await db.update(passwordResetRequests).set({usedAt:new Date()}).where(eq(passwordResetRequests.id,r.id));
+    await db.update(refreshSessions).set({revokedAt:new Date()}).where(and(eq(refreshSessions.userId,r.userId),isNull(refreshSessions.revokedAt)));
+    res.json({success:true,message:'Password reset successfully.'});
+  } catch { res.status(500).json({error:'Unable to reset password.'}); }
+});
+
 app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
     const [account] = await db.select().from(users).where(eq(users.id, req.user.id)).limit(1);
     if (!account || !account.isActive) return res.status(401).json({ error: 'User session is no longer active.' });
-    if (account.role !== 'admin' && account.approvalStatus !== 'APPROVED') {
+    if (account.role !== 'admin' && !['ACTIVE','APPROVED'].includes(String(account.approvalStatus).toUpperCase())) {
       return res.status(403).json({ code: 'ACCOUNT_PENDING', error: 'Account approval is required.' });
     }
     res.json({ user: {
       id: account.id, uid: account.uid, phone: account.phone || '', email: account.email,
       name: account.name || 'User', role: account.role, businessName: account.businessName || '',
-      approvalStatus: account.role === 'admin' ? 'APPROVED' : account.approvalStatus,
+      approvalStatus: account.role === 'admin' ? 'ACTIVE' : (String(account.approvalStatus).toUpperCase() === 'APPROVED' ? 'ACTIVE' : account.approvalStatus),
     }});
   } catch {
     res.status(500).json({ error: 'Unable to load current user.' });
@@ -368,8 +374,8 @@ app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
 app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const [[businesses], [pending], [contactCount], [automationCount], [messageCount]] = await Promise.all([
-      db.select({ val: count() }).from(users).where(eq(users.role, 'business_user')),
-      db.select({ val: count() }).from(users).where(and(eq(users.role, 'business_user'), eq(users.approvalStatus, 'PENDING'))),
+      db.select({ val: count() }).from(users).where(sql`${users.role} <> 'admin'`),
+      db.select({ val: count() }).from(users).where(and(sql`${users.role} <> 'admin'`, inArray(users.approvalStatus, ['PENDING','PENDING_APPROVAL']))),
       db.select({ val: count() }).from(contacts),
       db.select({ val: count() }).from(automations),
       db.select({ val: count() }).from(messages),
@@ -385,6 +391,34 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req, res) => {
     res.status(500).json({ error: err.message || 'Failed to load admin overview.' });
   }
 });
+
+
+app.get('/api/admin/businesses', requireAuth, requireAdmin, async (_req, res) => {
+  const rows = await db.select({ id:users.id, phone:users.phone, email:users.email, ownerName:users.name, businessName:users.businessName, businessAddress:users.businessAddress, status:users.approvalStatus, isActive:users.isActive, createdAt:users.createdAt, lastLoginAt:users.lastLoginAt }).from(users).where(sql`${users.role} <> 'admin'`).orderBy(desc(users.createdAt));
+  res.json(rows.map((r:any)=>({...r,status:r.status==='APPROVED'?'ACTIVE':r.status==='PENDING'?'PENDING_APPROVAL':r.status})));
+});
+app.get('/api/admin/businesses/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id=Number(req.params.id); const [business]=await db.select().from(users).where(eq(users.id,id)).limit(1); if(!business||business.role==='admin') return res.status(404).json({error:'Business not found.'});
+  const [[contactCount],[templateCount],[automationCount],[messageCount],[wa]] = await Promise.all([
+    db.select({val:count()}).from(contacts).where(eq(contacts.ownerUserId,id)), db.select({val:count()}).from(messageTemplates).where(eq(messageTemplates.ownerUserId,id)), db.select({val:count()}).from(automations).where(eq(automations.ownerUserId,id)), db.select({val:count()}).from(messages).where(eq(messages.ownerUserId,id)), db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,id)).limit(1)
+  ]);
+  res.json({
+    business:{...business,businessId:business.id,status:business.approvalStatus==='APPROVED'?'ACTIVE':business.approvalStatus==='PENDING'?'PENDING_APPROVAL':business.approvalStatus},
+    counts:{contacts:Number(contactCount?.val||0),templates:Number(templateCount?.val||0),automations:Number(automationCount?.val||0),messages:Number(messageCount?.val||0)},
+    whatsapp:wa?{
+      status:wa.connectionStatus||'SAVED',credentialsStored:true,metaAppId:wa.metaAppId||null,
+      metaBusinessId:wa.metaBusinessId||null,businessAccountId:wa.businessAccountId||null,phoneNumberId:wa.phoneNumberId||null,
+      businessPhone:wa.businessPhone||null,displayPhoneNumber:wa.displayPhoneNumber||null,verifiedName:wa.verifiedName||null,
+      qualityRating:wa.qualityRating||null,lastTestedAt:wa.lastTestedAt||null,lastConnectionError:wa.lastConnectionError||null,
+      accessTokenStored:Boolean(wa.accessToken),appSecretStored:Boolean(wa.metaAppSecret),webhookTokenStored:Boolean(wa.webhookVerifyToken)
+    }:{status:'NOT_CONNECTED',credentialsStored:false}
+  });
+});
+const adminSetBusinessStatus = (target:string) => async (req:any,res:any) => { try { const id=Number(req.params.id); const [b]=await db.select().from(users).where(eq(users.id,id)).limit(1); if(!b||b.role==='admin') return res.status(404).json({error:'Business not found.'}); const [updated]=await db.update(users).set({approvalStatus:target,isActive:!['REJECTED','SUSPENDED'].includes(target),approvedAt:target==='ACTIVE'?new Date():b.approvedAt,approvedById:target==='ACTIVE'?req.user?.id:b.approvedById}).where(eq(users.id,id)).returning(); res.json(updated); } catch(e:any){res.status(500).json({error:e.message||'Failed to update business status.'});} };
+app.post('/api/admin/businesses/:id/approve', requireAuth, requireAdmin, adminSetBusinessStatus('ACTIVE'));
+app.post('/api/admin/businesses/:id/reject', requireAuth, requireAdmin, adminSetBusinessStatus('REJECTED'));
+app.post('/api/admin/businesses/:id/suspend', requireAuth, requireAdmin, adminSetBusinessStatus('SUSPENDED'));
+app.post('/api/admin/businesses/:id/reactivate', requireAuth, requireAdmin, adminSetBusinessStatus('ACTIVE'));
 
 app.get('/api/admin/users', requireAuth, requireAdmin, async (_req, res) => {
   try {
@@ -404,19 +438,20 @@ app.post('/api/admin/users/:id/approval', requireAuth, requireAdmin, async (req:
   try {
     const id = Number(req.params.id);
     const status = String(req.body?.status || '').toUpperCase();
-    if (!['APPROVED', 'REJECTED', 'PENDING'].includes(status)) {
-      return res.status(400).json({ error: 'status must be APPROVED, REJECTED or PENDING.' });
+    if (!['ACTIVE', 'APPROVED', 'REJECTED', 'PENDING', 'PENDING_APPROVAL', 'SUSPENDED'].includes(status)) {
+      return res.status(400).json({ error: 'status must be ACTIVE, REJECTED, SUSPENDED or PENDING_APPROVAL.' });
     }
+    const normalizedStatus = status === 'APPROVED' ? 'ACTIVE' : status === 'PENDING' ? 'PENDING_APPROVAL' : status;
     const [existing] = await db.select().from(users).where(eq(users.id, id)).limit(1);
     if (!existing || existing.role === 'admin') return res.status(404).json({ error: 'Business user not found.' });
     const [updated] = await db.update(users).set({
-      approvalStatus: status,
-      approvedAt: status === 'APPROVED' ? new Date() : null,
-      approvedById: status === 'APPROVED' ? req.user?.id : null,
-      isActive: status === 'REJECTED' ? false : true,
+      approvalStatus: normalizedStatus,
+      approvedAt: normalizedStatus === 'ACTIVE' ? new Date() : null,
+      approvedById: normalizedStatus === 'ACTIVE' ? req.user?.id : null,
+      isActive: !['REJECTED','SUSPENDED'].includes(normalizedStatus),
     }).where(eq(users.id, id)).returning();
     await db.insert(auditLogs).values({
-      action: `BUSINESS_USER_${status}`,
+      action: `BUSINESS_USER_${normalizedStatus}`,
       actor: req.user?.phone || 'admin',
       details: { userId: id, businessName: existing.businessName },
     });
@@ -462,6 +497,180 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRe
   }
 });
 
+
+
+// Complete admin business inspection. Secrets are never returned to the admin UI.
+app.get('/api/admin/businesses/:id/resources', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [business] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    if (!business || business.role === 'admin') return res.status(404).json({ error: 'Business not found.' });
+    const [contactRows, templateRows, automationRows, messageRows, auditRows, waRows] = await Promise.all([
+      db.select().from(contacts).where(eq(contacts.ownerUserId, id)).orderBy(desc(contacts.createdAt)).limit(100),
+      db.select().from(messageTemplates).where(eq(messageTemplates.ownerUserId, id)).orderBy(desc(messageTemplates.updatedAt)).limit(100),
+      db.select({
+        id: automations.id, status: automations.status, scheduledAt: automations.scheduledAt, timezone: automations.timezone,
+        errorMessage: automations.errorMessage, createdAt: automations.createdAt,
+        contactId: contacts.id, contactName: contacts.name, contactPhone: contacts.phone,
+        templateId: messageTemplates.id, templateName: messageTemplates.name,
+      }).from(automations)
+        .leftJoin(contacts, eq(automations.contactId, contacts.id))
+        .leftJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
+        .where(eq(automations.ownerUserId, id)).orderBy(desc(automations.createdAt)).limit(100),
+      db.select({
+        id: messages.id, status: messages.status, templateName: messages.templateName, content: messages.content,
+        whatsappMessageId: messages.whatsappMessageId, errorCode: messages.errorCode, errorMessage: messages.errorMessage,
+        sentAt: messages.sentAt, deliveredAt: messages.deliveredAt, readAt: messages.readAt, createdAt: messages.createdAt,
+        contactName: contacts.name, contactPhone: contacts.phone,
+      }).from(messages).leftJoin(contacts, eq(messages.contactId, contacts.id))
+        .where(eq(messages.ownerUserId, id)).orderBy(desc(messages.createdAt)).limit(100),
+      db.select().from(auditLogs).where(sql`${auditLogs.details}->>'userId' = ${String(id)}`).orderBy(desc(auditLogs.createdAt)).limit(50),
+      db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, id)).limit(1),
+    ]);
+    const wa:any = waRows[0];
+    res.json({
+      business: {
+        id: business.id, ownerName: business.name, mobile: business.phone, email: business.email,
+        businessName: business.businessName, businessAddress: business.businessAddress,
+        status: business.approvalStatus === 'APPROVED' ? 'ACTIVE' : business.approvalStatus === 'PENDING' ? 'PENDING_APPROVAL' : business.approvalStatus,
+        isActive: business.isActive, createdAt: business.createdAt, approvedAt: business.approvedAt, lastLoginAt: business.lastLoginAt,
+      },
+      whatsapp: wa ? {
+        status: wa.connectionStatus, metaAppId: wa.metaAppId, wabaId: wa.businessAccountId, phoneNumberId: wa.phoneNumberId,
+        businessPhone: wa.businessPhone, displayPhoneNumber: wa.displayPhoneNumber, verifiedName: wa.verifiedName,
+        qualityRating: wa.qualityRating, metaBusinessId: wa.metaBusinessId, lastTestedAt: wa.lastTestedAt,
+        lastConnectionError: wa.lastConnectionError, credentialsStored: true,
+        accessTokenStored: Boolean(wa.accessToken), appSecretStored: Boolean(wa.metaAppSecret), webhookTokenStored: Boolean(wa.webhookVerifyToken),
+      } : { status: 'NOT_CONNECTED', credentialsStored: false, accessTokenStored: false, appSecretStored: false, webhookTokenStored: false },
+      contacts: contactRows,
+      templates: templateRows,
+      automations: automationRows,
+      messages: messageRows,
+      activity: auditRows,
+    });
+  } catch (e:any) {
+    res.status(500).json({ error: e.message || 'Failed to load business details.' });
+  }
+});
+
+
+app.get('/api/admin/contacts', requireAuth, requireAdmin, async (_req,res)=>{
+  try { const rows=await db.select({id:contacts.id,name:contacts.name,phone:contacts.phone,email:contacts.email,optIn:contacts.optIn,dob:contacts.dob,createdAt:contacts.createdAt,businessId:users.id,businessName:users.businessName,ownerName:users.name}).from(contacts).leftJoin(users,eq(contacts.ownerUserId,users.id)).orderBy(desc(contacts.createdAt)); res.json(rows); }
+  catch(e:any){res.status(500).json({error:e.message||'Failed to load admin contacts.'});}
+});
+app.get('/api/admin/templates', requireAuth, requireAdmin, async (_req,res)=>{
+  try { const rows=await db.select({id:messageTemplates.id,name:messageTemplates.name,language:messageTemplates.language,category:messageTemplates.category,status:messageTemplates.status,components:messageTemplates.components,variableCount:messageTemplates.variableCount,updatedAt:messageTemplates.updatedAt,businessId:users.id,businessName:users.businessName,ownerName:users.name}).from(messageTemplates).leftJoin(users,eq(messageTemplates.ownerUserId,users.id)).orderBy(desc(messageTemplates.updatedAt)); res.json(rows); }
+  catch(e:any){res.status(500).json({error:e.message||'Failed to load admin templates.'});}
+});
+app.get('/api/admin/automations', requireAuth, requireAdmin, async (_req,res)=>{
+  try { const rows=await db.select({id:automations.id,status:automations.status,scheduledAt:automations.scheduledAt,timezone:automations.timezone,errorMessage:automations.errorMessage,createdAt:automations.createdAt,businessId:users.id,businessName:users.businessName,ownerName:users.name,contactName:contacts.name,contactPhone:contacts.phone,templateName:messageTemplates.name}).from(automations).leftJoin(users,eq(automations.ownerUserId,users.id)).leftJoin(contacts,eq(automations.contactId,contacts.id)).leftJoin(messageTemplates,eq(automations.templateId,messageTemplates.id)).orderBy(desc(automations.createdAt)); res.json(rows); }
+  catch(e:any){res.status(500).json({error:e.message||'Failed to load admin automations.'});}
+});
+app.get('/api/admin/messages', requireAuth, requireAdmin, async (_req,res)=>{
+  try { const rows=await db.select({id:messages.id,status:messages.status,templateName:messages.templateName,content:messages.content,whatsappMessageId:messages.whatsappMessageId,errorCode:messages.errorCode,errorMessage:messages.errorMessage,sentAt:messages.sentAt,createdAt:messages.createdAt,businessId:users.id,businessName:users.businessName,ownerName:users.name,contactName:contacts.name,contactPhone:contacts.phone}).from(messages).leftJoin(users,eq(messages.ownerUserId,users.id)).leftJoin(contacts,eq(messages.contactId,contacts.id)).orderBy(desc(messages.createdAt)); res.json(rows); }
+  catch(e:any){res.status(500).json({error:e.message||'Failed to load admin messages.'});}
+});
+
+
+// Super Admin operational controls. These actions always execute with the selected
+// business's own WhatsApp credentials; the platform admin credentials are never used.
+app.post('/api/admin/businesses/:id/whatsapp/test', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const businessId = Number(req.params.id);
+    const [business] = await db.select().from(users).where(eq(users.id, businessId)).limit(1);
+    if (!business || business.role === 'admin') return res.status(404).json({ error: 'Business not found.' });
+    const creds = await resolveWhatsAppCredentials(businessId);
+    if (!creds.isFullyConfigured) return res.status(400).json({ error: 'This business has not saved complete WhatsApp credentials.' });
+    const result = await WhatsAppService.testConnection(creds.phoneNumberId, creds.accessToken, creds.apiVersion);
+    const [wa] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, businessId)).limit(1);
+    if (wa) await db.update(whatsappAccounts).set({
+      connectionStatus: result.success ? 'CONNECTED' : 'CONNECTION_ERROR', status: result.success ? 'CONNECTED' : 'ERROR',
+      displayPhoneNumber: result.phoneNumber || wa.displayPhoneNumber, verifiedName: result.verifiedName || wa.verifiedName,
+      qualityRating: result.qualityRating || wa.qualityRating, lastConnectionError: result.success ? null : (result.error || 'Connection test failed.'),
+      lastTestedAt: new Date(), updatedAt: new Date(),
+    }).where(eq(whatsappAccounts.id, wa.id));
+    await db.insert(auditLogs).values({ action: 'ADMIN_WHATSAPP_TEST', actor: req.user?.phone || 'admin', details: { userId: businessId, success: result.success } });
+    if (!result.success) return res.status(400).json({ success: false, error: result.error || 'Connection test failed.' });
+    res.json({ success: true, phoneNumber: result.phoneNumber, verifiedName: result.verifiedName, qualityRating: result.qualityRating });
+  } catch (e:any) { res.status(500).json({ error: e.message || 'Failed to test business WhatsApp connection.' }); }
+});
+
+app.post('/api/admin/businesses/:id/templates/sync', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const businessId = Number(req.params.id);
+    const [business] = await db.select().from(users).where(eq(users.id, businessId)).limit(1);
+    if (!business || business.role === 'admin') return res.status(404).json({ error: 'Business not found.' });
+    const creds = await resolveWhatsAppCredentials(businessId);
+    if (!creds.businessAccountId || !creds.accessToken) return res.status(400).json({ error: 'This business has not connected WhatsApp Business.' });
+    const metaRes = await WhatsAppService.fetchTemplates(creds.businessAccountId, creds.accessToken, creds.apiVersion);
+    if (!metaRes.success || !metaRes.templates) return res.status(400).json({ error: metaRes.error || 'Failed to fetch templates from Meta.' });
+    let syncedCount = 0;
+    for (const t of metaRes.templates) {
+      const varCount = extractVariableCount(t.components);
+      await db.insert(messageTemplates).values({
+        ownerUserId: businessId, metaTemplateId: t.id, name: t.name, language: t.language, category: t.category,
+        status: t.status, components: t.components, variableCount: varCount, lastSyncedAt: new Date(), updatedAt: new Date(),
+      }).onConflictDoUpdate({ target: messageTemplates.metaTemplateId, set: {
+        ownerUserId: businessId, name: t.name, language: t.language, category: t.category, status: t.status,
+        components: t.components, variableCount: varCount, lastSyncedAt: new Date(), updatedAt: new Date(),
+      }});
+      syncedCount++;
+    }
+    await db.insert(auditLogs).values({ action: 'ADMIN_TEMPLATE_SYNC', actor: req.user?.phone || 'admin', details: { userId: businessId, syncedCount } });
+    res.json({ success: true, syncedCount });
+  } catch (e:any) { res.status(500).json({ error: e.message || 'Failed to sync business templates.' }); }
+});
+
+app.post('/api/admin/automations/:id/:action', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id); const action = String(req.params.action || '').toLowerCase();
+    const [automation] = await db.select().from(automations).where(eq(automations.id, id)).limit(1);
+    if (!automation) return res.status(404).json({ error: 'Automation not found.' });
+    if (action === 'run-now') {
+      if (automation.status !== 'SCHEDULED') return res.status(409).json({ error: `Automation is ${automation.status}. Only SCHEDULED automations can run now.` });
+      const result = await automationWorker.triggerNow({ forceId: id });
+      await db.insert(auditLogs).values({ action: 'ADMIN_AUTOMATION_RUN_NOW', actor: req.user?.phone || 'admin', details: { userId: automation.ownerUserId, automationId: id } });
+      return res.json(result);
+    }
+    if (action === 'pause') {
+      if (automation.status !== 'SCHEDULED') return res.status(409).json({ error: `Automation is ${automation.status}. Only SCHEDULED automations can be paused.` });
+      const [updated] = await db.update(automations).set({ status: 'PAUSED', updatedAt: new Date() }).where(eq(automations.id, id)).returning();
+      return res.json({ success: true, automation: updated });
+    }
+    if (action === 'cancel' || action === 'stop') {
+      if (['SENT','DELIVERED','READ','PROCESSING','CANCELLED'].includes(automation.status)) return res.status(409).json({ error: `Automation cannot be cancelled from ${automation.status}.` });
+      const [updated] = await db.update(automations).set({ status: 'CANCELLED', updatedAt: new Date() }).where(eq(automations.id, id)).returning();
+      return res.json({ success: true, automation: updated });
+    }
+    if (action === 'resume') {
+      if (automation.status !== 'PAUSED') return res.status(409).json({ error: `Automation is ${automation.status}. Only PAUSED automations can resume.` });
+      const [updated] = await db.update(automations).set({ status: 'SCHEDULED', updatedAt: new Date() }).where(eq(automations.id, id)).returning();
+      return res.json({ success: true, automation: updated });
+    }
+    return res.status(400).json({ error: 'Unsupported automation action.' });
+  } catch (e:any) { res.status(500).json({ error: e.message || 'Failed to control automation.' }); }
+});
+
+app.get('/api/admin/reports', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const [businesses, contactRows, automationRows, messageRows, templateRows] = await Promise.all([
+      db.select({status: users.approvalStatus, isActive: users.isActive}).from(users).where(sql`${users.role} <> 'admin'`),
+      db.select({ownerUserId: contacts.ownerUserId}).from(contacts),
+      db.select({ownerUserId: automations.ownerUserId, status: automations.status}).from(automations),
+      db.select({ownerUserId: messages.ownerUserId, status: messages.status}).from(messages),
+      db.select({ownerUserId: messageTemplates.ownerUserId, status: messageTemplates.status}).from(messageTemplates),
+    ]);
+    const countStatus=(rows:any[], key:string, value:string)=>rows.filter(r=>String(r[key]||'').toUpperCase()===value).length;
+    res.json({
+      businesses: { total: businesses.length, active: businesses.filter((b:any)=>b.isActive && ['ACTIVE','APPROVED'].includes(String(b.status).toUpperCase())).length, pending: businesses.filter((b:any)=>['PENDING','PENDING_APPROVAL'].includes(String(b.status).toUpperCase())).length, suspended: countStatus(businesses,'status','SUSPENDED'), rejected: countStatus(businesses,'status','REJECTED') },
+      contacts: { total: contactRows.length },
+      automations: { total: automationRows.length, scheduled: countStatus(automationRows,'status','SCHEDULED'), sent: countStatus(automationRows,'status','SENT'), failed: countStatus(automationRows,'status','FAILED') },
+      messages: { total: messageRows.length, sent: messageRows.filter((m:any)=>['SENT','DELIVERED','READ'].includes(String(m.status).toUpperCase())).length, delivered: countStatus(messageRows,'status','DELIVERED'), read: countStatus(messageRows,'status','READ'), failed: countStatus(messageRows,'status','FAILED') },
+      templates: { total: templateRows.length, approved: countStatus(templateRows,'status','APPROVED'), pending: countStatus(templateRows,'status','PENDING'), rejected: countStatus(templateRows,'status','REJECTED') },
+    });
+  } catch (e:any) { res.status(500).json({error:e.message||'Failed to load reports.'}); }
+});
+
 /* =========================================================================
    2. BUSINESS DASHBOARD STATS
    ========================================================================= */
@@ -491,8 +700,8 @@ app.get('/api/dashboard/stats', requireAuth, async (req: AuthRequest, res) => {
     const account = accountRows[0];
     res.json({
       connection: {
-        configured: creds.isFullyConfigured, hasToken: creds.hasToken, hasPhoneId: creds.hasPhoneId,
-        tokenSource: creds.tokenSource, status: creds.isFullyConfigured ? 'CONNECTED' : 'DISCONNECTED',
+        configured: creds.status === 'CONNECTED', hasToken: creds.hasToken, hasPhoneId: creds.hasPhoneId,
+        credentialsSaved: Boolean(account), tokenSource: creds.tokenSource, status: creds.status,
         displayPhoneNumber: account?.displayPhoneNumber || null, verifiedName: account?.verifiedName || null,
         qualityRating: account?.qualityRating || null, lastTestedAt: account?.lastTestedAt || null,
       },
@@ -528,9 +737,13 @@ app.get('/api/whatsapp/account', requireAuth, async (req: AuthRequest, res) => {
       configured: creds.isFullyConfigured, hasToken: creds.hasToken, hasPhoneId: creds.hasPhoneId,
       id: acc?.id || null, metaAppId: creds.metaAppId, metaAppSecretMasked: maskSecret(creds.metaAppSecret),
       businessAccountId: creds.businessAccountId, phoneNumberId: creds.phoneNumberId,
+      businessPhone: acc?.businessPhone || '', metaBusinessId: acc?.metaBusinessId || '',
       accessTokenMasked: maskSecret(creds.accessToken), webhookVerifyTokenMasked: maskSecret(creds.webhookVerifyToken),
-      apiVersion: creds.apiVersion, status: creds.status, displayPhoneNumber: acc?.displayPhoneNumber || null,
+      apiVersion: creds.apiVersion, status: acc?.connectionStatus || creds.status, credentialsStatus: acc ? 'SAVED' : 'NOT_SAVED',
+      metaConnectionStatus: acc?.connectionStatus === 'CONNECTED' ? 'CONNECTED' : acc?.connectionStatus === 'CONNECTION_ERROR' ? 'ERROR' : 'NOT_CHECKED',
+      displayPhoneNumber: acc?.displayPhoneNumber || null,
       verifiedName: acc?.verifiedName || null, qualityRating: acc?.qualityRating || null, lastTestedAt: acc?.lastTestedAt || null,
+      lastConnectionError: acc?.lastConnectionError || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to load WhatsApp settings.' });
@@ -544,9 +757,11 @@ app.post('/api/whatsapp/account', requireAuth, async (req: AuthRequest, res) => 
     const current = await resolveWhatsAppCredentials(ownerUserId);
     const [existing] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, ownerUserId)).limit(1);
 
-    const phoneNumberId = String(req.body?.phoneNumberId || '').trim().replace(/['"]/g, '');
-    const businessAccountId = String(req.body?.businessAccountId || '').trim().replace(/['"]/g, '');
-    const metaAppId = String(req.body?.metaAppId || '').trim().replace(/['"]/g, '');
+    const phoneNumberId = String(req.body?.phoneNumberId ?? existing?.phoneNumberId ?? '').trim().replace(/['"]/g, '');
+    const businessAccountId = String(req.body?.businessAccountId ?? existing?.businessAccountId ?? '').trim().replace(/['"]/g, '');
+    const metaAppId = String(req.body?.metaAppId ?? existing?.metaAppId ?? '').trim().replace(/['"]/g, '');
+    const businessPhone = String(req.body?.businessPhone ?? existing?.businessPhone ?? '').trim();
+    const metaBusinessId = String(req.body?.metaBusinessId ?? existing?.metaBusinessId ?? '').trim();
     const apiVersion = String(req.body?.apiVersion || 'v21.0').trim() || 'v21.0';
     const tokenInput = String(req.body?.accessToken || '').trim().replace(/['"]/g, '');
     const secretInput = String(req.body?.metaAppSecret || '').trim().replace(/['"]/g, '');
@@ -555,22 +770,18 @@ app.post('/api/whatsapp/account', requireAuth, async (req: AuthRequest, res) => 
     const metaAppSecret = secretInput && !isMaskedSecret(secretInput) ? secretInput : current.metaAppSecret;
     const webhookVerifyToken = verifyInput && !isMaskedSecret(verifyInput) ? verifyInput : current.webhookVerifyToken;
 
-    if (!phoneNumberId || !accessToken) {
-      return res.status(400).json({ error: 'Phone Number ID and Access Token are required.' });
-    }
-
     const secretValues = encryptedCredentialValues({ accessToken, metaAppSecret, webhookVerifyToken });
     let row: any;
     if (existing) {
       [row] = await db.update(whatsappAccounts).set({
-        metaAppId, businessAccountId, phoneNumberId, apiVersion,
-        ...secretValues, status: 'CONNECTED', updatedAt: new Date(),
+        metaAppId, businessAccountId, phoneNumberId, businessPhone, metaBusinessId, apiVersion,
+        ...secretValues, status: 'DISCONNECTED', connectionStatus: 'SAVED', lastConnectionError: null, updatedAt: new Date(),
       }).where(eq(whatsappAccounts.id, existing.id)).returning();
     } else {
       [row] = await db.insert(whatsappAccounts).values({
-        ownerUserId, metaAppId, businessAccountId, phoneNumberId, apiVersion,
+        ownerUserId, metaAppId, businessAccountId, phoneNumberId, businessPhone, metaBusinessId, apiVersion,
         metaAppSecret: secretValues.metaAppSecret || '', accessToken: secretValues.accessToken || '',
-        webhookVerifyToken: secretValues.webhookVerifyToken || '', status: 'CONNECTED',
+        webhookVerifyToken: secretValues.webhookVerifyToken || '', status: 'DISCONNECTED', connectionStatus: 'SAVED',
       }).returning();
     }
 
@@ -578,7 +789,7 @@ app.post('/api/whatsapp/account', requireAuth, async (req: AuthRequest, res) => 
       action: 'WHATSAPP_CONFIG_UPDATED', actor: req.user?.phone || String(ownerUserId),
       details: { userId: ownerUserId, phoneNumberId, businessAccountId },
     });
-    res.json({ success: true, configured: true, message: 'WhatsApp credentials saved securely for your account.' });
+    res.json({ success: true, configured: Boolean(phoneNumberId && accessToken), credentialsStatus: 'SAVED', metaConnectionStatus: 'NOT_CHECKED', message: 'WhatsApp Details Saved' });
   } catch (err: any) {
     console.error('Save WhatsApp settings error:', err);
     res.status(500).json({ error: err.message || 'Failed to save WhatsApp settings.' });
@@ -600,7 +811,8 @@ app.post('/api/whatsapp/test', requireAuth, async (req: AuthRequest, res) => {
     const [existing] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, ownerUserId)).limit(1);
     if (existing) {
       await db.update(whatsappAccounts).set({
-        status: testRes.success ? 'CONNECTED' : 'ERROR',
+        status: testRes.success ? 'CONNECTED' : 'ERROR', connectionStatus: testRes.success ? 'CONNECTED' : 'CONNECTION_ERROR',
+        lastConnectionError: testRes.success ? null : (testRes.error || 'Connection test failed.'),
         displayPhoneNumber: testRes.phoneNumber || existing.displayPhoneNumber,
         verifiedName: testRes.verifiedName || existing.verifiedName,
         qualityRating: testRes.qualityRating || existing.qualityRating,
@@ -613,6 +825,250 @@ app.post('/api/whatsapp/test', requireAuth, async (req: AuthRequest, res) => {
     res.status(500).json({ success: false, error: err.message || 'Unexpected connection test error.' });
   }
 });
+
+
+
+
+/* =========================================================================
+   META EMBEDDED SIGNUP (IN-APP WEBVIEW)
+   ========================================================================= */
+async function metaPlatformConfig() {
+  try {
+    const result = await pool.query('SELECT meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version FROM platform_meta_settings WHERE id = 1 LIMIT 1');
+    const row: any = result.rows?.[0];
+    if (row) {
+      const dbSecret = decryptSecret(row.meta_app_secret);
+      if (String(row.meta_app_id || '').trim() || String(row.embedded_signup_config_id || '').trim() || dbSecret) {
+        return {
+          appId: String(row.meta_app_id || '').trim(),
+          appSecret: String(dbSecret || '').trim(),
+          configId: String(row.embedded_signup_config_id || '').trim(),
+          apiVersion: String(row.graph_api_version || 'v21.0').trim() || 'v21.0',
+          source: 'database',
+        };
+      }
+    }
+  } catch (e: any) {
+    console.warn('[Meta] Could not read platform Meta settings from database:', e?.message);
+  }
+  const envConfig = {
+    appId: String(process.env.META_PLATFORM_APP_ID || '').trim(),
+    appSecret: String(process.env.META_PLATFORM_APP_SECRET || '').trim(),
+    configId: String(process.env.META_EMBEDDED_SIGNUP_CONFIG_ID || '').trim(),
+    apiVersion: String(process.env.META_GRAPH_API_VERSION || 'v21.0').trim() || 'v21.0',
+  };
+  return {
+    ...envConfig,
+    source: (envConfig.appId || envConfig.appSecret || envConfig.configId) ? 'environment' : 'not_configured',
+  };
+}
+
+app.get('/api/admin/meta-platform-settings', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const cfg = await metaPlatformConfig();
+    res.json({
+      configured: Boolean(cfg.appId && cfg.appSecret && cfg.configId),
+      metaAppId: cfg.appId,
+      appSecretMasked: cfg.appSecret ? maskSecret(cfg.appSecret) : '',
+      embeddedSignupConfigId: cfg.configId,
+      apiVersion: cfg.apiVersion,
+      source: cfg.source,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to load Meta platform settings.' });
+  }
+});
+
+app.put('/api/admin/meta-platform-settings', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const current = await metaPlatformConfig();
+    const appId = String(req.body?.metaAppId ?? current.appId ?? '').trim();
+    const configId = String(req.body?.embeddedSignupConfigId ?? current.configId ?? '').trim();
+    const apiVersion = String(req.body?.apiVersion ?? current.apiVersion ?? 'v21.0').trim() || 'v21.0';
+    const incomingSecret = String(req.body?.appSecret ?? '').trim();
+    const appSecret = incomingSecret && !isMaskedSecret(incomingSecret) ? incomingSecret : current.appSecret;
+    if (!appId || !configId || !appSecret) return res.status(400).json({ error: 'Meta App ID, App Secret and Embedded Signup Configuration ID are required.' });
+    if (!/^v\d+\.\d+$/.test(apiVersion)) return res.status(400).json({ error: 'Graph API version must look like v21.0.' });
+    await pool.query(`
+      INSERT INTO platform_meta_settings (id, meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version, updated_at)
+      VALUES (1, $1, $2, $3, $4, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        meta_app_id = EXCLUDED.meta_app_id,
+        meta_app_secret = EXCLUDED.meta_app_secret,
+        embedded_signup_config_id = EXCLUDED.embedded_signup_config_id,
+        graph_api_version = EXCLUDED.graph_api_version,
+        updated_at = NOW()
+    `, [appId, encryptSecret(appSecret), configId, apiVersion]);
+    res.json({ success: true, configured: true, metaAppId: appId, appSecretMasked: maskSecret(appSecret), embeddedSignupConfigId: configId, apiVersion, source: 'database' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Failed to save Meta platform settings.' });
+  }
+});
+
+
+app.post('/api/admin/meta-platform-settings/test', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const cfg = await metaPlatformConfig();
+    if (!cfg.appId || !cfg.appSecret || !cfg.configId) {
+      return res.status(400).json({
+        success: false,
+        code: 'META_PLATFORM_NOT_CONFIGURED',
+        error: 'Save the WishFlow Meta App ID, App Secret and Embedded Signup Configuration ID first.',
+      });
+    }
+    const tokenUrl = `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/oauth/access_token?client_id=${encodeURIComponent(cfg.appId)}&client_secret=${encodeURIComponent(cfg.appSecret)}&grant_type=client_credentials`;
+    const response = await fetch(tokenUrl);
+    const body: any = await response.json().catch(() => ({}));
+    if (!response.ok || !body.access_token) {
+      return res.status(400).json({
+        success: false,
+        code: 'META_APP_CREDENTIALS_INVALID',
+        error: body?.error?.message || 'Meta rejected the App ID/App Secret. Check the WishFlow Meta Developer App credentials.',
+      });
+    }
+    return res.json({
+      success: true,
+      ready: true,
+      metaAppId: cfg.appId,
+      embeddedSignupConfigId: cfg.configId,
+      apiVersion: cfg.apiVersion,
+      source: cfg.source,
+      message: 'WishFlow Meta platform credentials are valid. Business owners can now use Continue with Meta.',
+    });
+  } catch (e: any) {
+    return res.status(500).json({ success: false, error: e.message || 'Could not validate Meta platform settings.' });
+  }
+});
+
+app.get('/api/whatsapp/embedded-signup/readiness', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Embedded Signup is available only for business accounts.' });
+    const cfg = await metaPlatformConfig();
+    const ready = Boolean(cfg.appId && cfg.appSecret && cfg.configId);
+    return res.json({
+      ready,
+      apiVersion: cfg.apiVersion,
+      source: cfg.source,
+      reason: ready ? null : 'WishFlow Meta platform setup has not been completed by the Super Admin.',
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message || 'Could not check Meta Embedded Signup readiness.' });
+  }
+});
+
+app.post('/api/whatsapp/embedded-signup/session', requireAuth, async (req:AuthRequest,res)=>{
+  try {
+    if(req.user?.role==='admin') return res.status(403).json({error:'Embedded Signup is available only for business accounts.'});
+    const cfg=await metaPlatformConfig();
+    if(!cfg.appId || !cfg.appSecret || !cfg.configId) return res.status(503).json({code:'META_PLATFORM_NOT_CONFIGURED',error:'WishFlow Meta platform setup is incomplete. The Super Admin must save the Meta App ID, App Secret and Embedded Signup Configuration ID once before business owners can use Facebook/Meta login.'});
+    const token=createPurposeToken(req.user!,'meta_embedded_signup',10*60);
+    const base=String(req.body?.baseUrl || '').trim();
+    const relative=`/meta/embedded-signup?token=${encodeURIComponent(token)}`;
+    res.json({url: base ? `${base.replace(/\/$/,'')}${relative}` : relative, expiresIn:600});
+  } catch(e:any){res.status(500).json({error:e.message||'Failed to start Meta Embedded Signup.'});}
+});
+
+app.get('/meta/embedded-signup', async (req,res)=>{
+  const token=String(req.query.token||'');
+  const user=verifyPurposeToken(token,'meta_embedded_signup');
+  if(!user || user.role==='admin') return res.status(401).type('html').send('<h2>Embedded Signup session expired.</h2><p>Return to WishFlow and start again.</p>');
+  const cfg=await metaPlatformConfig();
+  if(!cfg.appId || !cfg.configId) return res.status(503).type('html').send('<h2>Meta Embedded Signup is not configured.</h2><p>Configure it from WishFlow Admin Settings → Meta Platform Setup, then try again.</p>');
+  const safe=(v:string)=>JSON.stringify(v).replace(/</g,'\\u003c');
+  res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+  body{font-family:Arial,sans-serif;margin:0;background:#f4fbf7;color:#10231a}.wrap{padding:22px;max-width:560px;margin:auto}.card{background:white;border:1px solid #dfece5;border-radius:20px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.05)}
+  .step{display:flex;gap:12px;margin:15px 0;align-items:flex-start}.dot{width:28px;height:28px;border-radius:50%;background:#e8f8ef;color:#079455;display:grid;place-items:center;font-weight:700}.btn{width:100%;padding:15px;border:0;border-radius:14px;background:#079455;color:white;font-weight:700;font-size:16px}.muted{color:#66756e;line-height:1.5}.status{padding:12px;border-radius:12px;background:#f3f6f4;margin-top:14px;white-space:pre-wrap}</style></head><body>
+  <div class="wrap"><div class="card"><h2>Connect WhatsApp Business</h2><p class="muted">Complete the Meta verification inside WishFlow. Your Facebook password is entered only on Meta's secure login.</p>
+  <div class="step"><div class="dot">1</div><div><b>Sign in to Meta</b><div class="muted">Authenticate using Meta Business Login.</div></div></div>
+  <div class="step"><div class="dot">2</div><div><b>Select Business Portfolio & WABA</b><div class="muted">Choose or create the WhatsApp Business Account.</div></div></div>
+  <div class="step"><div class="dot">3</div><div><b>Select WhatsApp number</b><div class="muted">Choose/register the phone number used for messaging.</div></div></div>
+  <div class="step"><div class="dot">4</div><div><b>Grant permissions</b><div class="muted">WishFlow receives authorization, WABA and phone-number mapping.</div></div></div>
+  <button class="btn" id="connect" disabled style="opacity:.55">Loading Meta…</button><div class="status" id="status">Preparing secure Meta Business Login…</div></div></div>
+  <div id="fb-root"></div><script>
+  const SESSION_TOKEN=${safe(token)}, APP_ID=${safe(cfg.appId)}, CONFIG_ID=${safe(cfg.configId)}, API_VERSION=${safe(cfg.apiVersion)};
+  let signupData={}; const status=(t)=>document.getElementById('status').textContent=t; const btn=document.getElementById('connect');
+  window.addEventListener('message',(event)=>{try{if(!String(event.origin||'').includes('facebook.com'))return;const d=typeof event.data==='string'?JSON.parse(event.data):event.data;if(d?.type==='WA_EMBEDDED_SIGNUP'){signupData=d.data||{};status('WhatsApp Business Account selected. Waiting for Meta authorization…');}}catch(e){}});
+  window.fbAsyncInit=function(){try{FB.init({appId:APP_ID,cookie:true,xfbml:false,version:API_VERSION});btn.disabled=false;btn.style.opacity='1';btn.textContent='Continue with Meta';status('Ready. Tap Continue with Meta to sign in with your own Facebook/Meta account.');}catch(e){status('Could not initialize Meta Business Login: '+e.message);}};
+  (function(d,s,id){let js,fjs=d.getElementsByTagName(s)[0];if(d.getElementById(id))return;js=d.createElement(s);js.id=id;js.async=true;js.defer=true;js.src='https://connect.facebook.net/en_US/sdk.js';js.onerror=()=>status('Could not load Meta Business Login. Check internet access and try again.');fjs.parentNode.insertBefore(js,fjs);}(document,'script','facebook-jssdk'));
+  async function complete(code){
+    status('Saving authorization securely in WishFlow…');
+    const r=await fetch('/api/whatsapp/embedded-signup/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionToken:SESSION_TOKEN,code,wabaId:signupData.waba_id||signupData.wabaId||'',phoneNumberId:signupData.phone_number_id||signupData.phoneNumberId||'',businessId:signupData.business_id||signupData.businessId||''})});
+    const j=await r.json(); if(!r.ok)throw new Error(j.error||'Unable to complete connection.');
+    status('✓ Meta account authenticated\n✓ WABA selected\n✓ Phone number linked\n✓ Credentials encrypted and stored\n✓ Connection verified');
+    if(window.WishFlow) WishFlow.postMessage('connected');
+  }
+  btn.onclick=()=>{
+    if(typeof FB==='undefined'){status('Meta SDK is still loading. Please wait a moment and try again.');return;}
+    status('Opening Meta Business Login…'); btn.disabled=true;
+    FB.login(async function(response){try{const code=response?.authResponse?.code;if(!code){status('Meta login was cancelled or Meta did not return an authorization code.');btn.disabled=false;return;}await complete(code);}catch(e){status('Error: '+e.message);btn.disabled=false;if(window.WishFlow)WishFlow.postMessage('error:'+e.message);}}, {config_id:CONFIG_ID,response_type:'code',override_default_response_type:true,extras:{setup:{}}});
+  };
+  </script></body></html>`);
+});
+
+app.post('/api/whatsapp/embedded-signup/complete', async (req,res)=>{
+  try {
+    const sessionToken=String(req.body?.sessionToken||''); const user=verifyPurposeToken(sessionToken,'meta_embedded_signup');
+    if(!user || user.role==='admin') return res.status(401).json({error:'Embedded Signup session expired.'});
+    const cfg=await metaPlatformConfig(); const code=String(req.body?.code||'').trim();
+    if(!code) return res.status(400).json({error:'Meta authorization code is missing.'});
+    const tokenUrl=`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/oauth/access_token?client_id=${encodeURIComponent(cfg.appId)}&client_secret=${encodeURIComponent(cfg.appSecret)}&code=${encodeURIComponent(code)}`;
+    const tr=await fetch(tokenUrl); const tj:any=await tr.json();
+    if(!tr.ok || !tj.access_token) return res.status(400).json({error:tj?.error?.message||'Meta token exchange failed.'});
+    const accessToken=String(tj.access_token); let wabaId=String(req.body?.wabaId||'').trim(); let phoneNumberId=String(req.body?.phoneNumberId||'').trim(); const metaBusinessId=String(req.body?.businessId||'').trim();
+    if(wabaId && !phoneNumberId){
+      const pr=await fetch(`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(wabaId)}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating&access_token=${encodeURIComponent(accessToken)}`);
+      const pj:any=await pr.json(); if(pr.ok && Array.isArray(pj.data) && pj.data.length){ phoneNumberId=String(pj.data[0].id||''); }
+    }
+    if(!wabaId || !phoneNumberId) return res.status(400).json({error:'Meta login succeeded, but WABA/Phone Number selection was not returned. Confirm your Embedded Signup configuration allows WhatsApp account and phone selection.'});
+    const details=await WhatsAppService.testConnection(phoneNumberId,accessToken,cfg.apiVersion);
+    const enc=encryptedCredentialValues({accessToken,metaAppSecret:cfg.appSecret,webhookVerifyToken:randomBytes(24).toString('hex')});
+    const [existing]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,user.id)).limit(1);
+    const values:any={metaAppId:cfg.appId,businessAccountId:wabaId,phoneNumberId,metaBusinessId,apiVersion:cfg.apiVersion,...enc,connectionStatus:details.success?'CONNECTED':'CONNECTION_ERROR',status:details.success?'CONNECTED':'ERROR',displayPhoneNumber:details.phoneNumber||null,verifiedName:details.verifiedName||null,qualityRating:details.qualityRating||null,lastConnectionError:details.success?null:(details.error||'Meta verification failed.'),lastTestedAt:new Date(),updatedAt:new Date()};
+    if(existing) await db.update(whatsappAccounts).set(values).where(eq(whatsappAccounts.id,existing.id));
+    else await db.insert(whatsappAccounts).values({ownerUserId:user.id,businessPhone:details.phoneNumber||'',webhookVerifyToken:enc.webhookVerifyToken||'',accessToken:enc.accessToken||'',metaAppSecret:enc.metaAppSecret||'',...values});
+    // Subscribe the app to WABA webhooks where permitted. Failure here does not erase credentials.
+    try { await fetch(`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(wabaId)}/subscribed_apps`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`}}); } catch {}
+    res.json({success:true,connectionStatus:details.success?'CONNECTED':'CONNECTION_ERROR',wabaId,phoneNumberId,displayPhoneNumber:details.phoneNumber,verifiedName:details.verifiedName,qualityRating:details.qualityRating});
+  } catch(e:any){res.status(500).json({error:e.message||'Failed to complete Meta Embedded Signup.'});}
+});
+
+// Production WhatsApp connection API. Save first, verify second.
+app.get('/api/whatsapp/connection', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ownerUserId=req.user!.id; const creds=await resolveWhatsAppCredentials(ownerUserId); const [acc]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,ownerUserId)).limit(1);
+    res.json({
+      exists:Boolean(acc), credentialsStatus:acc?'SAVED':'NOT_SAVED', connectionStatus:acc?.connectionStatus||'NOT_CONNECTED', metaConnectionStatus:acc?.connectionStatus==='CONNECTED'?'CONNECTED':acc?.connectionStatus==='CONNECTION_ERROR'?'ERROR':'NOT_CHECKED',
+      metaAppId:creds.metaAppId,businessAccountId:creds.businessAccountId,phoneNumberId:creds.phoneNumberId,businessPhone:acc?.businessPhone||'',metaBusinessId:acc?.metaBusinessId||'',apiVersion:creds.apiVersion,
+      accessTokenMasked:maskSecret(creds.accessToken),appSecretMasked:maskSecret(creds.metaAppSecret),webhookVerifyTokenMasked:maskSecret(creds.webhookVerifyToken),displayPhoneNumber:acc?.displayPhoneNumber||null,verifiedName:acc?.verifiedName||null,qualityRating:acc?.qualityRating||null,lastSyncedAt:acc?.lastTestedAt||null,lastConnectionError:acc?.lastConnectionError||null,
+    });
+  } catch(e:any){res.status(500).json({error:e.message||'Failed to load WhatsApp connection.'});}
+});
+app.put('/api/whatsapp/connection', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if(req.user?.role==='admin') return res.status(403).json({error:'WhatsApp credentials belong to a business account.'});
+    const ownerUserId=req.user!.id; const [existing]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,ownerUserId)).limit(1); const current=await resolveWhatsAppCredentials(ownerUserId);
+    const clean=(v:any)=>String(v??'').trim().replace(/['"]/g,'');
+    const metaAppId=clean(req.body?.metaAppId ?? existing?.metaAppId), businessAccountId=clean(req.body?.businessAccountId ?? existing?.businessAccountId), phoneNumberId=clean(req.body?.phoneNumberId ?? existing?.phoneNumberId), businessPhone=String(req.body?.businessPhone ?? existing?.businessPhone ?? '').trim(), metaBusinessId=clean(req.body?.metaBusinessId ?? existing?.metaBusinessId), apiVersion=clean(req.body?.apiVersion ?? existing?.apiVersion ?? 'v21.0')||'v21.0';
+    const tokenIn=String(req.body?.accessToken??'').trim(), secretIn=String(req.body?.appSecret??req.body?.metaAppSecret??'').trim(), verifyIn=String(req.body?.webhookVerifyToken??'').trim();
+    const accessToken=tokenIn&&!isMaskedSecret(tokenIn)?tokenIn:current.accessToken, metaAppSecret=secretIn&&!isMaskedSecret(secretIn)?secretIn:current.metaAppSecret, webhookVerifyToken=verifyIn&&!isMaskedSecret(verifyIn)?verifyIn:current.webhookVerifyToken;
+    const enc=encryptedCredentialValues({accessToken,metaAppSecret,webhookVerifyToken}); let row:any;
+    if(existing){[row]=await db.update(whatsappAccounts).set({metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,...enc,connectionStatus:'SAVED',status:'DISCONNECTED',lastConnectionError:null,updatedAt:new Date()}).where(eq(whatsappAccounts.id,existing.id)).returning();}
+    else {[row]=await db.insert(whatsappAccounts).values({ownerUserId,metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,metaAppSecret:enc.metaAppSecret||'',accessToken:enc.accessToken||'',webhookVerifyToken:enc.webhookVerifyToken||'',connectionStatus:'SAVED',status:'DISCONNECTED'}).returning();}
+    res.json({success:true,credentialsStatus:'SAVED',connectionStatus:'SAVED',message:'WhatsApp Details Saved'});
+  } catch(e:any){res.status(500).json({error:e.message||'Failed to save WhatsApp connection.'});}
+});
+app.post('/api/whatsapp/connection/test', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ownerUserId=req.user!.id; const creds=await resolveWhatsAppCredentials(ownerUserId); const [acc]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,ownerUserId)).limit(1);
+    if(!acc) return res.status(400).json({error:'Save WhatsApp details first.'});
+    if(!creds.phoneNumberId||!creds.accessToken){await db.update(whatsappAccounts).set({connectionStatus:'CONNECTION_ERROR',lastConnectionError:'Phone Number ID and Access Token are required.',lastTestedAt:new Date()}).where(eq(whatsappAccounts.id,acc.id));return res.status(400).json({error:'Phone Number ID and Access Token are required. Your saved details were not deleted.'});}
+    const result=await WhatsAppService.testConnection(creds.phoneNumberId,creds.accessToken,creds.apiVersion);
+    await db.update(whatsappAccounts).set({connectionStatus:result.success?'CONNECTED':'CONNECTION_ERROR',status:result.success?'CONNECTED':'ERROR',lastConnectionError:result.success?null:(result.error||'Connection test failed.'),displayPhoneNumber:result.phoneNumber||acc.displayPhoneNumber,verifiedName:result.verifiedName||acc.verifiedName,qualityRating:result.qualityRating||acc.qualityRating,lastTestedAt:new Date(),updatedAt:new Date()}).where(eq(whatsappAccounts.id,acc.id));
+    if(!result.success) return res.status(400).json({success:false,connectionStatus:'CONNECTION_ERROR',error:result.error||'Connection test failed. Saved credentials were kept.'});
+    res.json({success:true,connectionStatus:'CONNECTED',displayPhoneNumber:result.phoneNumber,verifiedName:result.verifiedName,qualityRating:result.qualityRating});
+  } catch(e:any){res.status(500).json({error:e.message||'Connection test failed. Saved credentials were kept.'});}
+});
+app.delete('/api/whatsapp/connection', requireAuth, async (req:AuthRequest,res)=>{try{await db.delete(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,req.user!.id));res.json({success:true});}catch(e:any){res.status(500).json({error:e.message||'Failed to disconnect WhatsApp.'});}});
 
 /* =========================================================================
    4. CONTACTS MANAGEMENT
@@ -822,47 +1278,13 @@ function extractVariableCount(components: any[]): number {
 
 // GET message templates
 const getTemplatesHandler = async (req: AuthRequest, res: any) => {
-  let list: any[] = [];
-  if (isDatabaseConnected) {
-    try {
-      list = await db
-        .select()
-        .from(messageTemplates)
-        .orderBy(desc(messageTemplates.updatedAt));
-    } catch (err: any) {
-      console.warn('Notice fetching templates from DB:', err?.message);
-    }
-  }
-
-  if (!list || list.length === 0) {
-    list = localStore.templates;
-  }
-
-  const legacyDemoMetaIds = new Set([
-    'meta_tpl_hello_world',
-    'meta_tpl_appointment_confirmation',
-    'meta_tpl_payment_reminder',
-    'meta_tpl_welcome_message',
-    'meta_tpl_happy_birthday_wishes',
-  ]);
-  list = list.filter((t: any) => !legacyDemoMetaIds.has(String(t.metaTemplateId || '')));
-
-  if (req.user?.role !== 'admin') {
-    // Show the approved platform Birthday reference plus templates genuinely
-    // created/synced by this business.
-    list = list.filter((t: any) => !t.ownerUserId || Number(t.ownerUserId) === req.user!.id);
-
-    // Avoid duplicate Birthday rows left by older builds. Prefer the business's
-    // own Meta-synced record over the platform reference when both exist.
-    const byTemplate = new Map<string, any>();
-    for (const t of list) {
-      const key = `${String(t.name || '').toLowerCase()}|${String(t.language || '').toLowerCase()}`;
-      const current = byTemplate.get(key);
-      if (!current || (t.ownerUserId && !current.ownerUserId)) byTemplate.set(key, t);
-    }
-    list = Array.from(byTemplate.values());
-  }
-  res.json(list);
+  try {
+    if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected.' });
+    const list = req.user?.role === 'admin'
+      ? await db.select().from(messageTemplates).orderBy(desc(messageTemplates.updatedAt))
+      : await db.select().from(messageTemplates).where(eq(messageTemplates.ownerUserId, req.user!.id)).orderBy(desc(messageTemplates.updatedAt));
+    res.json(list);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to load templates.' }); }
 };
 
 app.get('/api/whatsapp/templates', requireAuth, getTemplatesHandler);
@@ -899,26 +1321,32 @@ app.post('/api/whatsapp/templates/sync', requireAuth, async (req: AuthRequest, r
 });
 
 
-// Create a WhatsApp template in the logged-in business WABA. Meta returns it as PENDING until reviewed.
+// Create a local template draft first. Optionally submit the persisted draft to Meta.
 app.post('/api/whatsapp/templates', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create templates from a business account.' });
     const name = String(req.body?.name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g,'_');
     const category = String(req.body?.category || 'MARKETING').toUpperCase();
     const language = String(req.body?.language || 'en_US');
+    const header = String(req.body?.header || '').trim();
     const body = String(req.body?.body || '').trim();
+    const footer = String(req.body?.footer || '').trim();
+    const buttons = Array.isArray(req.body?.buttons) ? req.body.buttons : [];
+    const submitToMeta = req.body?.submitToMeta === true;
     if (!/^[a-z0-9_]{3,512}$/.test(name)) return res.status(400).json({ error: 'Template name must use lowercase letters, numbers and underscores.' });
     if (!['MARKETING','UTILITY','AUTHENTICATION'].includes(category)) return res.status(400).json({ error: 'Invalid template category.' });
     if (body.length < 5 || body.length > 1024) return res.status(400).json({ error: 'Template body must be 5-1024 characters.' });
-    const creds = await resolveWhatsAppCredentials(req.user!.id);
-    if (!creds.businessAccountId || !creds.accessToken) return res.status(400).json({ error: 'Connect WhatsApp Business credentials first.' });
-    const result = await WhatsAppService.createTemplate({ businessAccountId: creds.businessAccountId, accessToken: creds.accessToken, apiVersion: creds.apiVersion, name, category, language, body });
-    if (!result.success) return res.status(400).json({ error: result.error || 'Meta rejected the template request.' });
-    const components = [{ type: 'BODY', text: body }];
-    const variableCount = extractVariableCount(components);
-    const [created] = await db.insert(messageTemplates).values({ ownerUserId:req.user!.id, metaTemplateId: result.id || null, name, language, category, status: result.status || 'PENDING', components, variableCount, lastSyncedAt:new Date(), updatedAt:new Date() }).returning();
-    res.status(201).json(created);
-  } catch (err:any) { res.status(500).json({ error: err.message || 'Failed to create template.' }); }
+    const components:any[]=[]; if(header) components.push({type:'HEADER',format:'TEXT',text:header}); components.push({type:'BODY',text:body}); if(footer) components.push({type:'FOOTER',text:footer}); if(buttons.length) components.push({type:'BUTTONS',buttons});
+    const variableCount=extractVariableCount(components);
+    const [draft] = await db.insert(messageTemplates).values({ ownerUserId:req.user!.id, metaTemplateId:null, name, language, category, status:'DRAFT', components, variableCount, lastSyncedAt:new Date(), updatedAt:new Date() }).returning();
+    if (!submitToMeta) return res.status(201).json(draft);
+    const creds=await resolveWhatsAppCredentials(req.user!.id);
+    if(!creds.businessAccountId||!creds.accessToken) return res.status(201).json({...draft,submitError:'Template saved as DRAFT. Connect WhatsApp Business before submitting to Meta.'});
+    const result=await WhatsAppService.createTemplate({businessAccountId:creds.businessAccountId,accessToken:creds.accessToken,apiVersion:creds.apiVersion,name,category,language,body});
+    if(!result.success) return res.status(201).json({...draft,submitError:result.error||'Meta submission failed. Draft was kept.'});
+    const [updated]=await db.update(messageTemplates).set({metaTemplateId:result.id||null,status:result.status||'PENDING',updatedAt:new Date(),lastSyncedAt:new Date()}).where(eq(messageTemplates.id,draft.id)).returning();
+    res.status(201).json(updated);
+  } catch (err:any) { res.status(500).json({ error: err.message || 'Failed to save template.' }); }
 });
 
 // SEED STANDARD TEMPLATES HELPER (For test/demo environments if Meta account has not approved yet)
@@ -986,45 +1414,32 @@ app.get('/api/automations/:id', requireAuth, async (req: AuthRequest, res) => {
 app.post('/api/automations', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create automations from a business account.' });
-    const { contactId, templateId, variables, scheduledAt, timezone } = req.body;
-    const cId = Number(contactId), tId = Number(templateId);
-    if (!cId || !tId || !scheduledAt) return res.status(400).json({ error: 'Contact, template and scheduled date/time are required.' });
-    const [contact] = await db.select().from(contacts).where(and(eq(contacts.id, cId), eq(contacts.ownerUserId, req.user!.id))).limit(1);
-    if (!contact) return res.status(404).json({ error: 'Contact not found in your account.' });
-    if (!contact.optIn) return res.status(400).json({ error: `${contact.name} has opted out of WhatsApp messages.` });
-    const [template] = await db.select().from(messageTemplates).where(eq(messageTemplates.id, tId)).limit(1);
-    if (!template) return res.status(404).json({ error: 'Template not found.' });
-    if (template.status !== 'APPROVED') return res.status(400).json({ error: 'The selected template is not approved by Meta yet.' });
+    const rawIds = Array.isArray(req.body?.contactIds) ? req.body.contactIds : [req.body?.contactId];
+    const contactIds = [...new Set(rawIds.map(Number).filter(Boolean))];
+    const tId = Number(req.body?.templateId), variables = req.body?.variables || {}, scheduledAt = req.body?.scheduledAt, timezone = String(req.body?.timezone || 'Asia/Kolkata');
+    if (!contactIds.length || !tId || !scheduledAt) return res.status(400).json({ error: 'Audience, template and scheduled date/time are required.' });
     const targetDate = new Date(scheduledAt);
     if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ error: 'Invalid scheduled date or time.' });
     if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: 'Schedule must be in the future.' });
-
-    const normalizedVariables: Record<string, string> = {};
-    if (variables && typeof variables === 'object' && !Array.isArray(variables)) {
-      for (const [key, value] of Object.entries(variables)) {
-        const v = String(value ?? '').trim();
-        if (v) normalizedVariables[String(key)] = v;
-      }
+    const [template] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.id,tId),eq(messageTemplates.ownerUserId,req.user!.id))).limit(1);
+    if (!template) return res.status(404).json({ error: 'Template not found in your business.' });
+    if (template.status !== 'APPROVED') return res.status(400).json({ error: 'Selected template is not Meta-approved yet.' });
+    const selectedContacts = await db.select().from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),inArray(contacts.id,contactIds)));
+    if (selectedContacts.length !== contactIds.length) return res.status(400).json({ error: 'One or more selected contacts do not belong to your business.' });
+    const invalid = selectedContacts.find(c=>!c.optIn);
+    if(invalid) return res.status(400).json({ error: `${invalid.name} has not opted in to WhatsApp messages.` });
+    const created:any[]=[];
+    for(const contact of selectedContacts){
+      const normalizedVariables:Record<string,string>={};
+      if(variables&&typeof variables==='object'&&!Array.isArray(variables)){ for(const [k,v] of Object.entries(variables)){ const text=String(v??'').trim().replace(/\{\{name\}\}/gi,contact.name); if(text) normalizedVariables[String(k)]=text; }}
+      if(template.variableCount>0&&!normalizedVariables['1']) normalizedVariables['1']=contact.name;
+      if(Object.keys(normalizedVariables).length<template.variableCount) return res.status(400).json({error:`Template ${template.name} requires ${template.variableCount} variable value(s).`});
+      const [row]=await db.insert(automations).values({ownerUserId:req.user!.id,contactId:contact.id,templateId:template.id,variables:normalizedVariables,scheduledAt:targetDate,timezone,status:'SCHEDULED'}).returning();
+      created.push(row);
     }
-    // Birthday templates normally use the contact name as {{1}}. Fill it safely when omitted.
-    if (template.variableCount > 0 && !normalizedVariables['1']) normalizedVariables['1'] = contact.name;
-    if (Object.keys(normalizedVariables).length < template.variableCount) {
-      return res.status(400).json({ error: `Template ${template.name} requires ${template.variableCount} variable value(s).` });
-    }
-
-    const [created] = await db.insert(automations).values({
-      ownerUserId: req.user!.id, contactId: contact.id, templateId: template.id,
-      variables: normalizedVariables, scheduledAt: targetDate, timezone: timezone || 'Asia/Kolkata', status: 'SCHEDULED',
-    }).returning();
-    await db.insert(auditLogs).values({
-      action: 'AUTOMATION_SCHEDULED', actor: req.user!.phone,
-      details: { automationId: created.id, contactId: contact.id, templateId: template.id },
-    });
-    if (targetDate <= new Date()) setTimeout(() => automationWorker.triggerNow({ forceId: created.id }).catch(() => {}), 250);
-    res.status(201).json({ success: true, automation: created });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to schedule automation.' });
-  }
+    await db.insert(auditLogs).values({action:'AUTOMATION_SCHEDULED',actor:req.user!.phone,details:{automationIds:created.map(x=>x.id),contactIds,templateId:tId,scheduledAt:targetDate.toISOString(),timezone}});
+    res.status(201).json({success:true,count:created.length,automations:created,automation:created[0]||null});
+  } catch(err:any){res.status(500).json({error:err.message||'Failed to schedule automation.'});}
 });
 
 app.post('/api/automations/:id/cancel', requireAuth, async (req: AuthRequest, res) => {
@@ -1057,7 +1472,14 @@ app.post('/api/automations/:id/run', requireAuth, async (req: AuthRequest, res) 
   }
 });
 
-app.post('/api/automations/worker/run', requireAuth, async (_req: AuthRequest, res) => {
+
+app.post('/api/automations/:id/pause', requireAuth, async (req:AuthRequest,res)=>{try{const id=Number(req.params.id);const cond=req.user?.role==='admin'?eq(automations.id,id):and(eq(automations.id,id),eq(automations.ownerUserId,req.user!.id));const [a]=await db.select().from(automations).where(cond).limit(1);if(!a)return res.status(404).json({error:'Automation not found.'});if(!['SCHEDULED','PROCESSING'].includes(a.status))return res.status(409).json({error:`Cannot pause automation in ${a.status} state.`});const [u]=await db.update(automations).set({status:'PAUSED',updatedAt:new Date()}).where(cond).returning();res.json(u);}catch(e:any){res.status(500).json({error:e.message||'Failed to pause automation.'});}});
+app.post('/api/automations/:id/run-now', requireAuth, async (req:AuthRequest,res)=>{try{const id=Number(req.params.id);const cond=req.user?.role==='admin'?eq(automations.id,id):and(eq(automations.id,id),eq(automations.ownerUserId,req.user!.id));const [a]=await db.select().from(automations).where(cond).limit(1);if(!a)return res.status(404).json({error:'Automation not found.'});if(a.status!=='SCHEDULED')return res.status(409).json({error:`Automation is ${a.status}. Only scheduled automations can run now.`});const result=await automationWorker.triggerNow({forceId:id});res.json(result);}catch(e:any){res.status(500).json({error:e.message||'Failed to run automation.'});}});
+
+app.get('/api/messages', requireAuth, async (req:AuthRequest,res)=>{try{const rows=req.user?.role==='admin'?await db.select().from(messages).orderBy(desc(messages.createdAt)):await db.select().from(messages).where(eq(messages.ownerUserId,req.user!.id)).orderBy(desc(messages.createdAt));res.json(rows);}catch(e:any){res.status(500).json({error:e.message||'Failed to load message logs.'});}});
+app.get('/api/messages/:id', requireAuth, async (req:AuthRequest,res)=>{try{const id=Number(req.params.id);const cond=req.user?.role==='admin'?eq(messages.id,id):and(eq(messages.id,id),eq(messages.ownerUserId,req.user!.id));const [row]=await db.select().from(messages).where(cond).limit(1);if(!row)return res.status(404).json({error:'Message not found.'});res.json(row);}catch(e:any){res.status(500).json({error:e.message||'Failed to load message.'});}});
+
+app.post('/api/automations/worker/run', requireAuth, requireAdmin, async (_req: AuthRequest, res) => {
   try { res.json(await automationWorker.triggerNow()); }
   catch (err: any) { res.status(500).json({ error: err.message || 'Worker failed.' }); }
 });
@@ -1067,8 +1489,9 @@ app.post('/api/whatsapp/send', requireAuth, async (req: AuthRequest, res) => {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Send messages from a business account.' });
     const cId = Number(req.body?.contactId), tId = Number(req.body?.templateId);
     const [contact] = await db.select().from(contacts).where(and(eq(contacts.id, cId), eq(contacts.ownerUserId, req.user!.id))).limit(1);
-    const [template] = await db.select().from(messageTemplates).where(eq(messageTemplates.id, tId)).limit(1);
-    if (!contact || !template) return res.status(404).json({ error: 'Contact or template not found.' });
+    const [template] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.id, tId), eq(messageTemplates.ownerUserId, req.user!.id))).limit(1);
+    if (!contact || !template) return res.status(404).json({ error: 'Contact or template not found in your business.' });
+    if (template.status !== 'APPROVED') return res.status(400).json({ error: 'Selected template is not Meta-approved for your WhatsApp Business account.' });
     const creds = await resolveWhatsAppCredentials(req.user!.id);
     if (!creds.isFullyConfigured) return res.status(400).json({ error: 'Connect your WhatsApp Business credentials in Settings first.' });
     const send = await WhatsAppService.sendTemplateMessage({
@@ -1103,8 +1526,8 @@ app.post('/api/whatsapp/send-bulk', requireAuth, async (req: AuthRequest, res) =
     if (!contactIds.length) return res.status(400).json({ error: 'Select at least one contact or group.' });
     if (contactIds.length > 500) return res.status(400).json({ error: 'Send to up to 500 contacts per batch.' });
     const templateId = Number(req.body?.templateId);
-    const [template] = await db.select().from(messageTemplates).where(eq(messageTemplates.id,templateId)).limit(1);
-    if (!template || template.status !== 'APPROVED') return res.status(400).json({ error: 'Select an approved WhatsApp template.' });
+    const [template] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.id,templateId),eq(messageTemplates.ownerUserId,req.user!.id))).limit(1);
+    if (!template || template.status !== 'APPROVED') return res.status(400).json({ error: 'Select an approved WhatsApp template from your own business account.' });
     const suppliedVars = req.body?.variables && typeof req.body.variables === 'object' ? req.body.variables : {};
     for (let n = 2; n <= template.variableCount; n++) {
       if (!String(suppliedVars[String(n)] ?? '').trim()) return res.status(400).json({ error: `Template variable {{${n}}} is required.` });
@@ -1237,6 +1660,35 @@ app.get('/api/wishflow/history', requireAuth, (_req, res) => {
    ========================================================================= */
 
 // Webhook Verification (Meta calls this when you configure the webhook URL in Meta App Dashboard)
+app.get('/webhooks/whatsapp', async (req, res) => {
+  try {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    let tokenMatches = false;
+    if (isDatabaseConnected && typeof token === 'string') {
+      try {
+        const accounts = await db.select({ webhookVerifyToken: whatsappAccounts.webhookVerifyToken }).from(whatsappAccounts);
+        tokenMatches = accounts.some((a) => decryptSecret(a.webhookVerifyToken) === token);
+      } catch (err) {
+        console.warn('Notice checking webhook verification tokens:', err);
+      }
+    }
+
+    if (mode === 'subscribe' && tokenMatches) {
+      console.log('[Webhook] Verification successful for Meta WhatsApp Webhook');
+      return res.status(200).send(challenge);
+    } else {
+      console.warn('[Webhook] Verification token mismatch');
+      return res.status(403).send('Verification failed');
+    }
+  } catch (err) {
+    console.error('[Webhook] Verification error:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
 app.get('/api/webhooks/whatsapp', async (req, res) => {
   try {
     const mode = req.query['hub.mode'];
@@ -1267,6 +1719,108 @@ app.get('/api/webhooks/whatsapp', async (req, res) => {
 });
 
 // Webhook Events (SENT, DELIVERED, READ, FAILED statuses)
+app.post('/webhooks/whatsapp', async (req, res) => {
+  try {
+    const body = req.body;
+    console.log('[Webhook] Received Meta WhatsApp event payload:', JSON.stringify(body).slice(0, 300));
+
+    // Acknowledge immediately per Meta requirements
+    res.status(200).send('EVENT_RECEIVED');
+
+    if (body.object === 'whatsapp_business_account') {
+      const entries = body.entry || [];
+      for (const entry of entries) {
+        const changes = entry.changes || [];
+        for (const change of changes) {
+          const value = change.value;
+          if (value && value.statuses) {
+            for (const statusObj of value.statuses) {
+              const wamid = statusObj.id; // WhatsApp message ID
+              const status = statusObj.status?.toUpperCase(); // "SENT", "DELIVERED", "READ", "FAILED"
+              const timestamp = statusObj.timestamp ? new Date(parseInt(statusObj.timestamp, 10) * 1000) : new Date();
+
+              console.log(`[Webhook] Status update for message ${wamid} -> ${status}`);
+
+              // Find matching message in DB
+              if (isDatabaseConnected) {
+                try {
+                  const matched = await db
+                    .select()
+                    .from(messages)
+                    .where(eq(messages.whatsappMessageId, wamid))
+                    .limit(1);
+
+                  if (matched.length > 0) {
+                    const existingMsg = matched[0];
+                    const updateFields: any = { status };
+
+                    if (status === 'DELIVERED') updateFields.deliveredAt = timestamp;
+                    if (status === 'READ') updateFields.readAt = timestamp;
+                    if (status === 'FAILED') {
+                      updateFields.failedAt = timestamp;
+                      if (statusObj.errors && statusObj.errors.length > 0) {
+                        updateFields.errorCode = String(statusObj.errors[0].code);
+                        updateFields.errorMessage = statusObj.errors[0].title || statusObj.errors[0].message;
+                      }
+                    }
+
+                    await db
+                      .update(messages)
+                      .set(updateFields)
+                      .where(eq(messages.id, existingMsg.id));
+
+                    // If message is linked to an automation, update automation status as well
+                    if (existingMsg.automationId) {
+                      await db
+                        .update(automations)
+                        .set({
+                          status,
+                          updatedAt: new Date(),
+                          ...(status === 'FAILED' && updateFields.errorMessage
+                            ? { errorMessage: updateFields.errorMessage }
+                            : {}),
+                        })
+                        .where(eq(automations.id, existingMsg.automationId));
+                    }
+                  }
+                } catch (err: any) {
+                  console.warn('Notice updating message in DB from webhook:', err?.message);
+                }
+              }
+
+              // Also update in localStore
+              const localMsg = localStore.messages.find((m) => m.whatsappMessageId === wamid);
+              if (localMsg) {
+                localMsg.status = status;
+                if (status === 'DELIVERED') localMsg.deliveredAt = timestamp;
+                if (status === 'READ') localMsg.readAt = timestamp;
+                if (status === 'FAILED') {
+                  localMsg.failedAt = timestamp;
+                  if (statusObj.errors && statusObj.errors.length > 0) {
+                    localMsg.errorMessage = statusObj.errors[0].title || statusObj.errors[0].message;
+                  }
+                }
+                if (localMsg.automationId) {
+                  const localAuto = localStore.automations.find((a) => a.id === localMsg.automationId);
+                  if (localAuto) {
+                    localAuto.status = status;
+                    localAuto.updatedAt = new Date();
+                    if (status === 'FAILED' && localMsg.errorMessage) {
+                      localAuto.errorMessage = localMsg.errorMessage;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Webhook] Error processing event:', err);
+  }
+});
+
 app.post('/api/webhooks/whatsapp', async (req, res) => {
   try {
     const body = req.body;

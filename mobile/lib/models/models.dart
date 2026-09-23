@@ -15,7 +15,7 @@ class AppUser {
     name: _s(j['name']),
     role: _s(j['role'], 'business_user'),
     businessName: _s(j['businessName'] ?? j['business_name']),
-    approvalStatus: _s(j['approvalStatus'] ?? j['approval_status'], 'APPROVED'),
+    approvalStatus: _s(j['approvalStatus'] ?? j['approval_status'], 'ACTIVE'),
   );
 }
 
@@ -25,14 +25,15 @@ class BusinessUser {
   final String uid, mobile, email, name, role, businessName, businessAddress, approvalStatus;
   final bool isActive;
   final DateTime? createdAt, lastLoginAt;
-  bool get isPending => approvalStatus == 'PENDING';
-  bool get isApproved => approvalStatus == 'APPROVED';
+  bool get isPending => approvalStatus == 'PENDING' || approvalStatus == 'PENDING_APPROVAL';
+  bool get isApproved => approvalStatus == 'APPROVED' || approvalStatus == 'ACTIVE';
   bool get isRejected => approvalStatus == 'REJECTED';
+  bool get isSuspended => approvalStatus == 'SUSPENDED';
   factory BusinessUser.fromJson(Map<String, dynamic> j) => BusinessUser(
     id: _i(j['id']), uid: _s(j['uid']), mobile: _s(j['phone'] ?? j['mobile']), email: _s(j['email']),
     name: _s(j['name']), role: _s(j['role'], 'business_user'), isActive: _b(j['isActive'] ?? j['is_active'], true),
     businessName: _s(j['businessName'] ?? j['business_name']), businessAddress: _s(j['businessAddress'] ?? j['business_address']),
-    approvalStatus: _s(j['approvalStatus'] ?? j['approval_status'], 'PENDING'),
+    approvalStatus: _s(j['approvalStatus'] ?? j['approval_status'], 'PENDING_APPROVAL'),
     createdAt: DateTime.tryParse(_s(j['createdAt'] ?? j['created_at'])),
     lastLoginAt: DateTime.tryParse(_s(j['lastLoginAt'] ?? j['last_login_at'])),
   );

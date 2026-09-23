@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
+import 'whatsapp_connection_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -27,7 +28,7 @@ class SettingsScreen extends ConsumerWidget {
         const Text('Profile & Settings', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
         const SizedBox(height: 14),
         _tile(context, Icons.business_outlined, 'Business Profile', 'View your registered business information', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BusinessProfileScreen()))),
-        _tile(context, Icons.chat_outlined, 'WhatsApp Configuration', 'Manage your WhatsApp Business credentials', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WhatsAppSettingsPage()))),
+        _tile(context, Icons.chat_outlined, 'WhatsApp Configuration', 'Connect, verify and manage this business WhatsApp account', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WhatsAppConnectionScreen()))),
         _tile(context, Icons.cake_outlined, 'Birthday WishFlow', 'Birthday automation settings', () => _showInfo(context, 'Birthday settings are available from the Birthday WishFlow module.')),
         _tile(context, Icons.security_outlined, 'Security', 'Account and credential security', () => _showInfo(context, 'Your login password and WhatsApp secrets are stored securely by the backend.')),
         _tile(context, Icons.help_outline_rounded, 'Help & Support', 'Setup and troubleshooting information', () => _showInfo(context, 'For local Android testing, keep the backend running and use adb reverse tcp:3000 tcp:3000.')),

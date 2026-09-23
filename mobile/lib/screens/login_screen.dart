@@ -49,11 +49,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _loadRememberedLogin() async {
     final storage = ref.read(secureStorageProvider);
     final remember = await storage.read(key: 'remember_login') == 'true';
-    final mobile = await storage.read(key: 'remembered_mobile');
+    final remembered = await storage.read(key: 'remembered_mobile');
+    final lastLogin = await storage.read(key: 'last_login_mobile');
+    final mobile = (remembered != null && remembered.isNotEmpty) ? remembered : lastLogin;
     if (!mounted) return;
     setState(() {
       _rememberMe = remember;
-      if (remember && mobile != null && mobile.isNotEmpty) {
+      if (mobile != null && mobile.isNotEmpty) {
         _loginFullPhone = mobile;
         _mobile.text = mobile.startsWith('+91') ? mobile.substring(3) : mobile.replaceAll(RegExp(r'\D'), '');
       }
@@ -95,6 +97,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     await ref.read(authProvider.notifier).signIn(
           mobile: normalized,
           password: _password.text,
+          rememberMe: _rememberMe,
         );
   }
 

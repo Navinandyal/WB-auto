@@ -236,13 +236,9 @@ export class WishflowService {
             eq(messageTemplates.name, 'birthday'),
             eq(messageTemplates.name, 'happy_birthday_wishes'),
           ),
-          or(
-            isNull(messageTemplates.ownerUserId),
-            eq(messageTemplates.ownerUserId, contact.ownerUserId),
-          ),
+          eq(messageTemplates.ownerUserId, contact.ownerUserId),
         ));
-      const chosen = candidates.find((t) => t.ownerUserId === contact.ownerUserId)
-        || candidates.find((t) => t.ownerUserId == null);
+      const chosen = candidates.find((t) => t.ownerUserId === contact.ownerUserId);
       effectiveTemplateId = chosen?.id || 0;
     }
 

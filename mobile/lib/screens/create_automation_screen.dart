@@ -662,44 +662,31 @@ class _CreateAutomationScreenState
     }
 
     setState(() => saving = true);
-    var created = 0;
     try {
-      for (final id in selectedContacts) {
-        Contact? c;
-        for (final x in contacts) {
-          if (x.id == id) {
-            c = x;
-            break;
-          }
-        }
-        if (c == null || !c.optIn) continue;
-
-        final vars = <String, String>{};
-        if (template.variableCount > 0) vars['1'] = c.name;
-        for (final e in extraVariables.entries) {
-          if (e.value.trim().isNotEmpty) vars['${e.key}'] = e.value.trim();
-        }
-
-        await ref.read(apiClientProvider).post(
-          '/api/automations',
-          data: {
-            'contactId': c.id,
-            'templateId': template.id,
-            'variables': vars,
-            'scheduledAt': when.toUtc().toIso8601String(),
-            'timezone': 'Asia/Kolkata',
-          },
-        );
-        created++;
+      final eligibleIds = selectedContacts.where((id) {
+        for (final c in contacts) { if (c.id == id) return c.optIn; }
+        return false;
+      }).toList();
+      final vars = <String, String>{};
+      if (template.variableCount > 0) vars['1'] = '{{name}}';
+      for (final e in extraVariables.entries) {
+        if (e.value.trim().isNotEmpty) vars['${e.key}'] = e.value.trim();
       }
-
+      final result = await ref.read(apiClientProvider).post(
+        '/api/automations',
+        data: {
+          'contactIds': eligibleIds,
+          'templateId': template.id,
+          'variables': vars,
+          'scheduledAt': when.toUtc().toIso8601String(),
+          'timezone': 'Asia/Kolkata',
+        },
+      );
+      final created = result is Map ? int.tryParse('${result['count'] ?? eligibleIds.length}') ?? eligibleIds.length : eligibleIds.length;
       ref.invalidate(automationsProvider);
       ref.invalidate(dashboardProvider);
       if (mounted) {
-        showAppMessage(
-          context,
-          '$created automation${created == 1 ? '' : 's'} added to queue',
-        );
+        showAppMessage(context, '$created scheduled message${created == 1 ? '' : 's'} created');
         Navigator.pop(context, true);
       }
     } catch (e) {
