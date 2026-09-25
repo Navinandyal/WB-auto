@@ -3,9 +3,9 @@ bool _b(dynamic v, [bool d = false]) => v is bool ? v : d;
 String _s(dynamic v, [String d = '']) => v?.toString() ?? d;
 
 class AppUser {
-  AppUser({required this.id, required this.uid, required this.mobile, required this.email, required this.name, required this.role, required this.businessName, required this.approvalStatus});
+  AppUser({required this.id, required this.uid, required this.mobile, required this.email, required this.name, required this.role, required this.businessName, required this.businessAddress, required this.approvalStatus});
   final int id;
-  final String uid, mobile, email, name, role, businessName, approvalStatus;
+  final String uid, mobile, email, name, role, businessName, businessAddress, approvalStatus;
   bool get isAdmin => role == 'admin';
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
     id: _i(j['id']),
@@ -15,6 +15,7 @@ class AppUser {
     name: _s(j['name']),
     role: _s(j['role'], 'business_user'),
     businessName: _s(j['businessName'] ?? j['business_name']),
+    businessAddress: _s(j['businessAddress'] ?? j['business_address']),
     approvalStatus: _s(j['approvalStatus'] ?? j['approval_status'], 'ACTIVE'),
   );
 }

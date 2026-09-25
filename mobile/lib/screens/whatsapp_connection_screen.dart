@@ -35,6 +35,10 @@ class _ConnectionBody extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 30),
       children: [
         _StatusHero(status: status, data: data),
+        if (exists) ...[
+          const SizedBox(height: 12),
+          const _AutomationReadinessCard(),
+        ],
         const SizedBox(height: 16),
         if (!exists) ...[
           const Text('Connect WhatsApp Business', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
@@ -236,6 +240,47 @@ class _ChoiceCard extends StatelessWidget {
           ]),
         ),
       );
+}
+
+
+class _AutomationReadinessCard extends ConsumerWidget {
+  const _AutomationReadinessCard();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: (() async => (await ref.read(apiClientProvider).get('/api/whatsapp/connection/readiness') as Map).cast<String, dynamic>())(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Card(child: Padding(padding: EdgeInsets.all(16), child: Row(children: [SizedBox(width: 18,height: 18,child: CircularProgressIndicator(strokeWidth:2)),SizedBox(width:10),Text('Checking automation readiness...')])));
+        }
+        if (snapshot.hasError || !snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+        final d = snapshot.data!;
+        final ready = d['automationReady'] == true;
+        final c = (d['credentials'] as Map?)?.cast<String,dynamic>() ?? const <String,dynamic>{};
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(ready ? Icons.check_circle_rounded : Icons.info_outline_rounded, color: ready ? BusinessColors.green : Colors.orange),
+                const SizedBox(width: 8),
+                Text(ready ? 'Automation Ready' : 'Automation Setup Incomplete', style: const TextStyle(fontSize: 17,fontWeight: FontWeight.w900)),
+              ]),
+              const SizedBox(height: 10),
+              Text('Access token: ${c['accessTokenStored'] == true ? 'stored securely' : 'missing'}'),
+              Text('Phone Number ID: ${c['phoneNumberIdStored'] == true ? 'stored' : 'missing'}'),
+              Text('WABA ID: ${c['wabaIdStored'] == true ? 'stored' : 'missing'}'),
+              Text('Approved templates: ${d['approvedTemplateCount'] ?? 0}'),
+              const SizedBox(height: 8),
+              Text('${d['nextAction'] ?? ''}', style: const TextStyle(color: BusinessColors.muted, height:1.35)),
+            ]),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class ManualWhatsAppConnectionScreen extends ConsumerStatefulWidget {

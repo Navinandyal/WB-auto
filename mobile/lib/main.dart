@@ -16,11 +16,12 @@ class App extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
+    final themePref = ref.watch(themeProvider);
     final user = auth.user;
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'WishFlow',
-      theme: buildBusinessTheme(),
+      theme: buildBusinessTheme(accent: themePref.accent),
       home: auth.loading
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : user == null

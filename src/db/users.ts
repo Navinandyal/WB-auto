@@ -43,8 +43,6 @@ export async function ensureFixedAdminUser() {
   if (byUid[0]) {
     const updated = await db.update(users).set({
       phone,
-      email,
-      name,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',
@@ -58,8 +56,6 @@ export async function ensureFixedAdminUser() {
   if (byPhone[0]) {
     const updated = await db.update(users).set({
       uid,
-      email,
-      name,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',

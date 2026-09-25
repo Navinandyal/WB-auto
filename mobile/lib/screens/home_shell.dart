@@ -40,8 +40,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                   IconButton(onPressed: () {}, icon: const Icon(Icons.notifications_none_rounded, color: BusinessColors.ink)),
                   CircleAvatar(
                     radius: 20,
-                    backgroundColor: const Color(0xFFEAF2FF),
-                    child: Text(_initials(user?.name ?? 'U'), style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF2870E8))),
+                    backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(.12),
+                    child: Text(_initials(user?.name ?? 'U'), style: TextStyle(fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.primary)),
                   ),
                 ]),
               ),

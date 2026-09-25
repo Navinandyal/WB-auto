@@ -1,10 +1,58 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../core/api_client.dart';
+import '../core/biometric_service.dart';
 import '../models/models.dart';
+import '../theme/business_theme.dart';
 
 final secureStorageProvider = Provider((_) => const FlutterSecureStorage());
 final apiClientProvider = Provider((ref) => ApiClient(ref.watch(secureStorageProvider)));
+
+
+class AppThemePreference {
+  const AppThemePreference({required this.accentKey, required this.accent, this.loaded = false});
+  final String accentKey;
+  final Color accent;
+  final bool loaded;
+}
+
+class AppThemeController extends StateNotifier<AppThemePreference> {
+  AppThemeController(this.ref)
+      : super(AppThemePreference(accentKey: appAccentChoices.first.key, accent: appAccentChoices.first.color)) {
+    _load();
+  }
+  final Ref ref;
+
+  Future<void> _load() async {
+    final key = await ref.read(secureStorageProvider).read(key: 'wishflow_accent_key') ?? 'green';
+    final choice = accentChoiceForKey(key);
+    state = AppThemePreference(accentKey: choice.key, accent: choice.color, loaded: true);
+  }
+
+  Future<void> setAccent(String key) async {
+    final choice = accentChoiceForKey(key);
+    await ref.read(secureStorageProvider).write(key: 'wishflow_accent_key', value: choice.key);
+    state = AppThemePreference(accentKey: choice.key, accent: choice.color, loaded: true);
+  }
+}
+
+final themeProvider = StateNotifierProvider<AppThemeController, AppThemePreference>((ref) => AppThemeController(ref));
+
+class BiometricPreference {
+  const BiometricPreference({required this.enabled, required this.available, this.deviceLabel = ''});
+  final bool enabled;
+  final bool available;
+  final String deviceLabel;
+}
+
+final biometricPreferenceProvider = FutureProvider<BiometricPreference>((ref) async {
+  final storage = ref.read(secureStorageProvider);
+  final enabled = await storage.read(key: 'biometric_enabled') == 'true';
+  final available = await BiometricService.isAvailable();
+  final label = await storage.read(key: 'biometric_device_label') ?? '';
+  return BiometricPreference(enabled: enabled, available: available, deviceLabel: label);
+});
 
 class AuthState {
   const AuthState({this.user, this.loading = true, this.error});
@@ -82,6 +130,112 @@ class AuthController extends StateNotifier<AuthState> {
       final user = AppUser.fromJson(u);
       await storage.write(key: 'logged_in_user_id', value: '${user.id}');
       await storage.write(key: 'business_id', value: '${user.id}');
+      _invalidateTenantScopedData();
+      state = AuthState(loading: false, user: user);
+      return true;
+    } catch (e) {
+      state = AuthState(loading: false, error: e is ApiException ? e.message : e.toString());
+      return false;
+    }
+  }
+
+
+  Future<bool> updateProfile({
+    required String name,
+    required String email,
+    required String businessName,
+    required String businessAddress,
+  }) async {
+    if (state.user == null) return false;
+    try {
+      final data = await ref.read(apiClientProvider).put('/api/profile', data: {
+        'name': name.trim(),
+        'email': email.trim(),
+        'businessName': businessName.trim(),
+        'businessAddress': businessAddress.trim(),
+      });
+      final map = (data as Map).cast<String, dynamic>();
+      final user = AppUser.fromJson((map['user'] as Map).cast<String, dynamic>());
+      state = AuthState(user: user, loading: false);
+      return true;
+    } catch (e) {
+      state = AuthState(user: state.user, loading: false, error: e is ApiException ? e.message : e.toString());
+      return false;
+    }
+  }
+
+  Future<bool> enableBiometricLogin({String deviceLabel = 'Android device'}) async {
+    final current = state.user;
+    if (current == null) return false;
+    final available = await BiometricService.isAvailable();
+    if (!available) {
+      state = AuthState(user: current, loading: false, error: 'Biometric authentication is not available or not enrolled on this device.');
+      return false;
+    }
+    final authenticated = await BiometricService.authenticate(reason: 'Confirm your identity to enable biometric login');
+    if (!authenticated) return false;
+    try {
+      final data = (await ref.read(apiClientProvider).post('/api/auth/biometric/enable', data: {
+        'deviceLabel': deviceLabel,
+      }) as Map).cast<String, dynamic>();
+      final credentialId = '${data['credentialId'] ?? ''}';
+      final secret = '${data['secret'] ?? ''}';
+      if (credentialId.isEmpty || secret.isEmpty) throw ApiException('Server did not return a biometric credential.');
+      final storage = ref.read(secureStorageProvider);
+      await storage.write(key: 'biometric_credential_id', value: credentialId);
+      await storage.write(key: 'biometric_secret', value: secret);
+      await storage.write(key: 'biometric_enabled', value: 'true');
+      await storage.write(key: 'biometric_device_label', value: deviceLabel);
+      await storage.write(key: 'last_login_mobile', value: current.mobile);
+      ref.invalidate(biometricPreferenceProvider);
+      return true;
+    } catch (e) {
+      state = AuthState(user: current, loading: false, error: e is ApiException ? e.message : e.toString());
+      return false;
+    }
+  }
+
+  Future<void> disableBiometricLogin() async {
+    final storage = ref.read(secureStorageProvider);
+    final credentialId = await storage.read(key: 'biometric_credential_id');
+    if (state.user != null && credentialId != null && credentialId.isNotEmpty) {
+      try {
+        await ref.read(apiClientProvider).post('/api/auth/biometric/disable', data: {'credentialId': credentialId});
+      } catch (_) {}
+    }
+    for (final key in ['biometric_credential_id', 'biometric_secret', 'biometric_enabled', 'biometric_device_label']) {
+      await storage.delete(key: key);
+    }
+    ref.invalidate(biometricPreferenceProvider);
+  }
+
+  Future<bool> signInWithBiometric() async {
+    final storage = ref.read(secureStorageProvider);
+    final enabled = await storage.read(key: 'biometric_enabled') == 'true';
+    final credentialId = await storage.read(key: 'biometric_credential_id') ?? '';
+    final secret = await storage.read(key: 'biometric_secret') ?? '';
+    if (!enabled || credentialId.isEmpty || secret.isEmpty) return false;
+
+    final authenticated = await BiometricService.authenticate(reason: 'Use biometrics to sign in to WishFlow');
+    if (!authenticated) return false;
+    state = const AuthState(loading: true);
+    try {
+      final data = await ref.read(apiClientProvider).post('/api/auth/biometric/login', data: {
+        'credentialId': credentialId,
+        'secret': secret,
+      });
+      final map = (data as Map).cast<String, dynamic>();
+      final accessToken = '${map['accessToken'] ?? map['token'] ?? ''}';
+      final refreshToken = '${map['refreshToken'] ?? ''}';
+      if (accessToken.isEmpty) throw ApiException('Biometric login did not return an access token.');
+      await storage.write(key: 'access_token', value: accessToken);
+      await storage.write(key: 'auth_token', value: accessToken);
+      if (refreshToken.isNotEmpty) await storage.write(key: 'refresh_token', value: refreshToken);
+      await storage.write(key: 'remember_login', value: 'true');
+      final user = AppUser.fromJson((map['user'] as Map).cast<String, dynamic>());
+      await storage.write(key: 'logged_in_user_id', value: '${user.id}');
+      await storage.write(key: 'business_id', value: '${user.id}');
+      await storage.write(key: 'last_login_mobile', value: user.mobile);
       _invalidateTenantScopedData();
       state = AuthState(loading: false, user: user);
       return true;

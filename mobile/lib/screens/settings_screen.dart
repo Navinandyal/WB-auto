@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
+import 'appearance_screen.dart';
+import 'legal_pages.dart';
+import 'profile_screen.dart';
+import 'security_settings_screen.dart';
 import 'whatsapp_connection_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -11,28 +15,49 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authProvider).user;
+    final accent = Theme.of(context).colorScheme.primary;
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 8, 18, 90),
       children: [
-        Row(children: [
-          CircleAvatar(radius: 30, backgroundColor: const Color(0xFFEAF2FF), child: Text(_initials(user?.name ?? 'U'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF2F80ED)))),
-          const SizedBox(width: 14),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(user?.name ?? 'Business User', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
-            const SizedBox(height: 3),
-            Text(user?.mobile ?? '', style: const TextStyle(color: BusinessColors.muted)),
-            if (user?.businessName.isNotEmpty == true) Text(user!.businessName, style: const TextStyle(color: BusinessColors.greenDark, fontWeight: FontWeight.w700)),
-          ])),
-        ]),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Row(children: [
+              CircleAvatar(radius: 32, backgroundColor: accent.withOpacity(.12), child: Text(_initials(user?.name ?? 'U'), style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: accent))),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(user?.name ?? 'Business User', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
+                const SizedBox(height: 3),
+                Text(user?.mobile ?? '', style: const TextStyle(color: BusinessColors.muted)),
+                if (user?.businessName.isNotEmpty == true) Text(user!.businessName, style: TextStyle(color: accent, fontWeight: FontWeight.w800)),
+              ])),
+              IconButton(
+                tooltip: 'Edit profile',
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())),
+                icon: const Icon(Icons.edit_outlined),
+              ),
+            ]),
+          ),
+        ),
         const SizedBox(height: 18),
-        const Text('Profile & Settings', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
-        const SizedBox(height: 14),
-        _tile(context, Icons.business_outlined, 'Business Profile', 'View your registered business information', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BusinessProfileScreen()))),
-        _tile(context, Icons.chat_outlined, 'WhatsApp Configuration', 'Connect, verify and manage this business WhatsApp account', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WhatsAppConnectionScreen()))),
-        _tile(context, Icons.cake_outlined, 'Birthday WishFlow', 'Birthday automation settings', () => _showInfo(context, 'Birthday settings are available from the Birthday WishFlow module.')),
-        _tile(context, Icons.security_outlined, 'Security', 'Account and credential security', () => _showInfo(context, 'Your login password and WhatsApp secrets are stored securely by the backend.')),
+        const Text('Profile & Settings', style: TextStyle(fontSize: 27, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
+        const SizedBox(height: 4),
+        const Text('Manage your account, security, appearance and legal preferences.', style: TextStyle(color: BusinessColors.muted)),
+        const SizedBox(height: 16),
+        _sectionLabel('Account'),
+        _tile(context, Icons.person_outline_rounded, 'Editable Profile', 'Update your name, email and business details', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
+        _tile(context, Icons.fingerprint_rounded, 'Security & Biometric Login', 'Enable fingerprint/biometric sign-in on this device', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SecuritySettingsScreen()))),
+        _tile(context, Icons.chat_outlined, 'WhatsApp Configuration', 'Connect and manage this business WhatsApp account', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WhatsAppConnectionScreen()))),
+        const SizedBox(height: 8),
+        _sectionLabel('Personalization'),
+        _tile(context, Icons.palette_outlined, 'Themes & Colors', 'Change button, navigation and accent colors in one tap', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AppearanceScreen()))),
+        _tile(context, Icons.cake_outlined, 'Birthday WishFlow', 'Birthday automation preferences and schedules', () => _showInfo(context, 'Birthday settings are available from the Birthday WishFlow module.')),
+        const SizedBox(height: 8),
+        _sectionLabel('Legal & Support'),
+        _tile(context, Icons.privacy_tip_outlined, 'Privacy Policy', 'How WishFlow handles account, contact and WhatsApp data', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()))),
+        _tile(context, Icons.description_outlined, 'Terms & Conditions', 'Business messaging, automation and account terms', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TermsConditionsScreen()))),
         _tile(context, Icons.help_outline_rounded, 'Help & Support', 'Setup and troubleshooting information', () => _showInfo(context, 'For local Android testing, keep the backend running and use adb reverse tcp:3000 tcp:3000.')),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
         OutlinedButton.icon(
           style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Color(0xFFFFCDD5))),
           onPressed: () => _logout(context, ref),
@@ -49,6 +74,11 @@ class SettingsScreen extends ConsumerWidget {
     return p.length == 1 ? p.first[0].toUpperCase() : '${p.first[0]}${p.last[0]}'.toUpperCase();
   }
 
+  Widget _sectionLabel(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(2, 5, 2, 8),
+        child: Text(text.toUpperCase(), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: BusinessColors.muted, letterSpacing: .8)),
+      );
+
   Widget _tile(BuildContext context, IconData icon, String title, String subtitle, VoidCallback onTap) => Padding(
     padding: const EdgeInsets.only(bottom: 9),
     child: Card(child: ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), leading: SoftIcon(icon), title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)), subtitle: Text(subtitle), trailing: const Icon(Icons.chevron_right_rounded), onTap: onTap)),
@@ -59,7 +89,7 @@ class SettingsScreen extends ConsumerWidget {
   Future<void> _logout(BuildContext context, WidgetRef ref) async {
     final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
       title: const Text('Logout?'),
-      content: const Text('Are you sure you want to logout from your account?'),
+      content: const Text('Your WishFlow app session will end. Saved WhatsApp business credentials and biometric-login preference remain securely stored unless you explicitly disable or disconnect them.'),
       actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(ctx, true), child: const Text('Logout'))],
     ));
     if (yes == true) await ref.read(authProvider.notifier).signOut();

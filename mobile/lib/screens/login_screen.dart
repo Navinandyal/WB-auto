@@ -38,12 +38,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _confirmObscure = true;
   bool _rememberMe = true;
   bool _registering = false;
+  bool _biometricReady = false;
   String? _registerMessage;
 
   @override
   void initState() {
     super.initState();
     _loadRememberedLogin();
+    _loadBiometricState();
   }
 
   Future<void> _loadRememberedLogin() async {
@@ -99,6 +101,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           password: _password.text,
           rememberMe: _rememberMe,
         );
+  }
+
+
+  Future<void> _loadBiometricState() async {
+    final storage = ref.read(secureStorageProvider);
+    final enabled = await storage.read(key: 'biometric_enabled') == 'true';
+    final credentialId = await storage.read(key: 'biometric_credential_id') ?? '';
+    final secret = await storage.read(key: 'biometric_secret') ?? '';
+    if (!mounted) return;
+    setState(() => _biometricReady = enabled && credentialId.isNotEmpty && secret.isNotEmpty);
+  }
+
+  Future<void> _signInWithBiometric() async {
+    FocusScope.of(context).unfocus();
+    final ok = await ref.read(authProvider.notifier).signInWithBiometric();
+    if (!ok && mounted) {
+      final error = ref.read(authProvider).error;
+      if (error != null && error.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+      }
+    }
   }
 
   Future<void> _submitRegistration() async {
@@ -166,7 +189,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
-    const blue = Color(0xFF0867FF);
+    final blue = ref.watch(themeProvider).accent;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F8FF),
@@ -429,6 +452,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
               ),
             ),
+            if (_biometricReady) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: auth.loading ? null : _signInWithBiometric,
+                  icon: const Icon(Icons.fingerprint_rounded, size: 25),
+                  label: const Text('Sign in with biometrics', style: TextStyle(fontWeight: FontWeight.w800)),
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             const Row(
               children: [

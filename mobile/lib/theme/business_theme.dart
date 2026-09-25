@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 class BusinessColors {
+  // Semantic colors remain stable. Accent-aware UI should use Theme.of(context).colorScheme.primary.
   static const green = Color(0xFF08A96B);
   static const greenDark = Color(0xFF007A4C);
   static const greenSoft = Color(0xFFE9FAF2);
@@ -11,13 +12,46 @@ class BusinessColors {
   static const background = Color(0xFFF8FBFC);
 }
 
-ThemeData buildBusinessTheme() {
+class AccentChoice {
+  const AccentChoice(this.key, this.label, this.color);
+  final String key;
+  final String label;
+  final Color color;
+}
+
+const appAccentChoices = <AccentChoice>[
+  AccentChoice('green', 'Green', Color(0xFF08A96B)),
+  AccentChoice('blue', 'Blue', Color(0xFF2563EB)),
+  AccentChoice('purple', 'Purple', Color(0xFF7C3AED)),
+  AccentChoice('black', 'Black', Color(0xFF202124)),
+  AccentChoice('red', 'Red', Color(0xFFDC2626)),
+  AccentChoice('light_green', 'Light Green', Color(0xFF55B96C)),
+  AccentChoice('light_blue', 'Light Blue', Color(0xFF4EA5F5)),
+  AccentChoice('pink', 'Pink', Color(0xFFE95D9A)),
+  AccentChoice('yellow', 'Yellow', Color(0xFFE0A800)),
+  AccentChoice('cream', 'Cream', Color(0xFFC9A66B)),
+  AccentChoice('teal', 'Teal', Color(0xFF0F9D8A)),
+  AccentChoice('orange', 'Orange', Color(0xFFE97824)),
+  AccentChoice('lavender', 'Lavender', Color(0xFF8B7DD8)),
+  AccentChoice('rose', 'Rose', Color(0xFFD85F7A)),
+  AccentChoice('mint', 'Mint', Color(0xFF43BFA3)),
+  AccentChoice('sky', 'Sky', Color(0xFF3D93D1)),
+];
+
+AccentChoice accentChoiceForKey(String key) => appAccentChoices.firstWhere(
+      (e) => e.key == key,
+      orElse: () => appAccentChoices.first,
+    );
+
+ThemeData buildBusinessTheme({Color accent = BusinessColors.green}) {
   final scheme = ColorScheme.fromSeed(
-    seedColor: BusinessColors.green,
+    seedColor: accent,
     brightness: Brightness.light,
-    primary: BusinessColors.green,
+    primary: accent,
     surface: Colors.white,
   );
+  final soft = Color.alphaBlend(accent.withOpacity(.10), Colors.white);
+
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
@@ -46,15 +80,15 @@ ThemeData buildBusinessTheme() {
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: BusinessColors.line)),
       enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: BusinessColors.line)),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: BusinessColors.green, width: 1.4)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: accent, width: 1.4)),
       errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.redAccent)),
       labelStyle: const TextStyle(color: BusinessColors.muted),
       hintStyle: const TextStyle(color: Color(0xFF98A3B6)),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: BusinessColors.green,
-        foregroundColor: Colors.white,
+        backgroundColor: accent,
+        foregroundColor: scheme.onPrimary,
         minimumSize: const Size(0, 52),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
@@ -68,10 +102,22 @@ ThemeData buildBusinessTheme() {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
     ),
-    navigationBarTheme: const NavigationBarThemeData(
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? scheme.onPrimary : null),
+      trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? accent : null),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? accent : null),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? accent : null),
+    ),
+    progressIndicatorTheme: ProgressIndicatorThemeData(color: accent),
+    navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.white,
-      indicatorColor: BusinessColors.greenSoft,
-      labelTextStyle: WidgetStatePropertyAll(TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+      indicatorColor: soft,
+      iconTheme: WidgetStateProperty.resolveWith((s) => IconThemeData(color: s.contains(WidgetState.selected) ? accent : BusinessColors.muted)),
+      labelTextStyle: WidgetStateProperty.resolveWith((s) => TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: s.contains(WidgetState.selected) ? accent : BusinessColors.ink)),
     ),
   );
 }
@@ -84,14 +130,15 @@ class BusinessHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Container(
           width: 48,
           height: 48,
-          decoration: BoxDecoration(color: BusinessColors.green, borderRadius: BorderRadius.circular(16)),
-          child: const Icon(Icons.chat_bubble_rounded, color: Colors.white, size: 28),
+          decoration: BoxDecoration(color: accent, borderRadius: BorderRadius.circular(16)),
+          child: Icon(Icons.chat_bubble_rounded, color: Theme.of(context).colorScheme.onPrimary, size: 28),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -119,14 +166,17 @@ class SectionTitle extends StatelessWidget {
 }
 
 class SoftIcon extends StatelessWidget {
-  const SoftIcon(this.icon, {super.key, this.color = BusinessColors.green});
+  const SoftIcon(this.icon, {super.key, this.color});
   final IconData icon;
-  final Color color;
+  final Color? color;
   @override
-  Widget build(BuildContext context) => Container(
-        width: 46,
-        height: 46,
-        decoration: BoxDecoration(color: color.withOpacity(.11), borderRadius: BorderRadius.circular(14)),
-        child: Icon(icon, color: color),
-      );
+  Widget build(BuildContext context) {
+    final resolved = color ?? Theme.of(context).colorScheme.primary;
+    return Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(color: resolved.withOpacity(.11), borderRadius: BorderRadius.circular(14)),
+      child: Icon(icon, color: resolved),
+    );
+  }
 }

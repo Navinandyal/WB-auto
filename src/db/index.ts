@@ -122,6 +122,18 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS refresh_sessions_user_idx ON refresh_sessions(user_id);
+        CREATE TABLE IF NOT EXISTS biometric_credentials (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          credential_id TEXT NOT NULL UNIQUE,
+          secret_hash TEXT NOT NULL,
+          device_label TEXT NOT NULL DEFAULT 'Android device',
+          last_used_at TIMESTAMP,
+          revoked_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS biometric_credentials_user_idx ON biometric_credentials(user_id);
+        CREATE INDEX IF NOT EXISTS biometric_credentials_active_idx ON biometric_credentials(user_id, revoked_at);
         CREATE TABLE IF NOT EXISTS whatsapp_accounts (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -156,8 +168,31 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           meta_app_secret TEXT NOT NULL DEFAULT '',
           embedded_signup_config_id TEXT NOT NULL DEFAULT '',
           graph_api_version TEXT NOT NULL DEFAULT 'v21.0',
+          public_base_url TEXT NOT NULL DEFAULT '',
+          webhook_verify_token TEXT NOT NULL DEFAULT '',
           updated_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE platform_meta_settings ADD COLUMN IF NOT EXISTS public_base_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE platform_meta_settings ADD COLUMN IF NOT EXISTS webhook_verify_token TEXT NOT NULL DEFAULT '';
+        CREATE TABLE IF NOT EXISTS meta_embedded_signup_sessions (
+          id SERIAL PRIMARY KEY,
+          session_id TEXT NOT NULL UNIQUE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          state_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'PENDING',
+          redirect_uri TEXT NOT NULL,
+          error_message TEXT,
+          waba_id TEXT,
+          phone_number_id TEXT,
+          display_phone_number TEXT,
+          verified_name TEXT,
+          expires_at TIMESTAMP NOT NULL,
+          completed_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS meta_embedded_signup_sessions_user_idx ON meta_embedded_signup_sessions(user_id);
+        CREATE INDEX IF NOT EXISTS meta_embedded_signup_sessions_status_idx ON meta_embedded_signup_sessions(status);
         CREATE TABLE IF NOT EXISTS contacts (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,

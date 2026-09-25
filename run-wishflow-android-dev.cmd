@@ -131,6 +131,44 @@ if errorlevel 1 (
 
 echo [OK] Backend is reachable at %API_BASE_URL%
 
+rem ---------- Optional Meta/Facebook HTTPS tunnel ----------
+echo.
+echo [META] Checking local HTTPS tunnel for Meta Embedded Signup...
+set "META_TUNNEL_URL="
+set "NGROK_EXE="
+for /f "delims=" %%N in ('where ngrok 2^>nul') do (
+  if not defined NGROK_EXE set "NGROK_EXE=%%N"
+)
+
+if defined NGROK_EXE (
+  for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; try { $j=Invoke-RestMethod 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2; $u=($j.tunnels ^| Where-Object { $_.public_url -like 'https://*' } ^| Select-Object -First 1).public_url; if($u){Write-Output $u} } catch {}"`) do set "META_TUNNEL_URL=%%U"
+
+  if not defined META_TUNNEL_URL (
+    echo Starting ngrok HTTPS tunnel for backend port %BACKEND_PORT%...
+    start "WishFlow Meta Tunnel" /min "%NGROK_EXE%" http %BACKEND_PORT%
+    for /L %%I in (1,1,20) do (
+      if not defined META_TUNNEL_URL (
+        timeout /t 1 /nobreak >nul
+        for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; try { $j=Invoke-RestMethod 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2; $u=($j.tunnels ^| Where-Object { $_.public_url -like 'https://*' } ^| Select-Object -First 1).public_url; if($u){Write-Output $u} } catch {}"`) do set "META_TUNNEL_URL=%%U"
+      )
+    )
+  )
+
+  if defined META_TUNNEL_URL (
+    echo [OK] Meta HTTPS tunnel: !META_TUNNEL_URL!
+    echo      WishFlow backend auto-detects this URL from ngrok.
+  ) else (
+    echo [WARN] ngrok is installed but no HTTPS tunnel was detected.
+    echo        Run: ngrok http %BACKEND_PORT%
+  )
+) else (
+  echo [WARN] ngrok is not installed/in PATH.
+  echo        Normal WishFlow app development will still run.
+  echo        Meta/Facebook Embedded Signup requires HTTPS.
+  echo        Install ngrok once, authenticate it, then run this CMD again.
+  echo        After installation, this runner starts and detects the tunnel automatically.
+)
+
 rem ---------- Detect connected Android device ----------
 echo.
 echo [3/6] Detecting connected Android device...

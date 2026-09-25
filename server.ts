@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { randomBytes, randomInt } from 'crypto';
+import { randomBytes, randomInt, createHash } from 'crypto';
 import path from 'path';
 import { db, initDatabaseSchema, isDatabaseConnected, pool } from './src/db/index.ts';
 import { localStore } from './src/db/localStore.ts';
@@ -173,7 +173,7 @@ async function mobileLoginHandler(req: any, res: any) {
       return res.status(403).json({ code: 'ACCOUNT_SUSPENDED', error: 'Your account is suspended. Please contact support.' });
     }
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, account.id));
-    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || phone, email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
+    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || phone, email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', businessAddress: account.businessAddress || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
     const accessToken = createAccessToken(user);
     const refreshToken = createRefreshToken();
     await db.insert(refreshSessions).values({ userId: account.id, tokenHash: hashRefreshToken(refreshToken), expiresAt: new Date(Date.now() + (rememberMe ? 30 : 1) * 24 * 60 * 60 * 1000) });
@@ -198,6 +198,83 @@ async function mobileLoginHandler(req: any, res: any) {
 app.post('/api/auth/login', mobileLoginHandler);
 app.post('/api/auth/mobile-login', mobileLoginHandler);
 
+// Device-specific biometric login. The mobile app never stores the user's password.
+// A random device credential is generated only after an authenticated user enables biometrics.
+app.post('/api/auth/biometric/enable', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
+    const deviceLabel = String(req.body?.deviceLabel || 'Android device').trim().slice(0, 120) || 'Android device';
+    const credentialId = `bio_${randomBytes(18).toString('hex')}`;
+    const secret = randomBytes(32).toString('base64url');
+    // Re-enabling on the same labelled device revokes the previous credential without affecting other devices.
+    await pool.query('UPDATE biometric_credentials SET revoked_at = NOW() WHERE user_id = $1 AND device_label = $2 AND revoked_at IS NULL', [req.user.id, deviceLabel]);
+    await pool.query(
+      'INSERT INTO biometric_credentials (user_id, credential_id, secret_hash, device_label) VALUES ($1, $2, $3, $4)',
+      [req.user.id, credentialId, hashPassword(secret), deviceLabel],
+    );
+    res.json({ success: true, credentialId, secret, deviceLabel });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Unable to enable biometric login.' });
+  }
+});
+
+app.post('/api/auth/biometric/disable', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
+    const credentialId = String(req.body?.credentialId || '').trim();
+    if (credentialId) {
+      await pool.query('UPDATE biometric_credentials SET revoked_at = NOW() WHERE user_id = $1 AND credential_id = $2 AND revoked_at IS NULL', [req.user.id, credentialId]);
+    } else {
+      await pool.query('UPDATE biometric_credentials SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [req.user.id]);
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Unable to disable biometric login.' });
+  }
+});
+
+app.post('/api/auth/biometric/login', async (req, res) => {
+  try {
+    if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected.' });
+    const credentialId = String(req.body?.credentialId || '').trim();
+    const secret = String(req.body?.secret || '').trim();
+    if (!credentialId || !secret) return res.status(400).json({ error: 'Biometric credential is required.' });
+
+    const result = await pool.query(`
+      SELECT bc.id AS biometric_id, bc.secret_hash, bc.device_label,
+             u.id, u.uid, u.email, u.phone, u.name, u.role, u.is_active,
+             u.approval_status, u.business_name, u.business_address
+      FROM biometric_credentials bc
+      JOIN users u ON u.id = bc.user_id
+      WHERE bc.credential_id = $1 AND bc.revoked_at IS NULL
+      LIMIT 1
+    `, [credentialId]);
+    const account: any = result.rows[0];
+    if (!account || !verifyPassword(secret, account.secret_hash)) {
+      return res.status(401).json({ code: 'BIOMETRIC_CREDENTIAL_INVALID', error: 'Biometric login is no longer valid. Sign in with your password and enable biometrics again.' });
+    }
+    const status = String(account.approval_status || '').toUpperCase();
+    if (!account.is_active) return res.status(403).json({ code: 'ACCOUNT_SUSPENDED', error: 'Your account is suspended.' });
+    if (account.role !== 'admin' && !['ACTIVE', 'APPROVED'].includes(status)) {
+      return res.status(403).json({ code: 'ACCOUNT_NOT_ACTIVE', error: 'Your business account is not active.' });
+    }
+    const user = {
+      id: Number(account.id), businessId: account.role === 'admin' ? null : Number(account.id), uid: account.uid,
+      phone: account.phone || '', email: account.email || '', name: account.name || 'User', role: account.role,
+      businessName: account.business_name || '', businessAddress: account.business_address || '',
+      approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status),
+    };
+    const accessToken = createAccessToken(user);
+    const refreshToken = createRefreshToken();
+    await db.insert(refreshSessions).values({ userId: Number(account.id), tokenHash: hashRefreshToken(refreshToken), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) });
+    await pool.query('UPDATE biometric_credentials SET last_used_at = NOW() WHERE id = $1', [account.biometric_id]);
+    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, Number(account.id)));
+    res.json({ success: true, accessToken, refreshToken, token: accessToken, expiresIn: 900, user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Biometric login failed.' });
+  }
+});
+
 app.post('/api/auth/refresh', async (req, res) => {
   try {
     const refreshToken = String(req.body?.refreshToken || '').trim();
@@ -208,7 +285,7 @@ app.post('/api/auth/refresh', async (req, res) => {
     if (!account || !account.isActive) return res.status(401).json({ error: 'User session is no longer active.' });
     const status = String(account.approvalStatus || '').toUpperCase();
     if (account.role !== 'admin' && !['ACTIVE','APPROVED'].includes(status)) return res.status(403).json({ error: 'Account approval is required.' });
-    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || '', email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
+    const user = { id: account.id, businessId: account.role === 'admin' ? null : account.id, uid: account.uid, phone: account.phone || '', email: account.email, name: account.name || 'User', role: account.role, businessName: account.businessName || '', businessAddress: account.businessAddress || '', approvalStatus: account.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status) };
     res.json({ accessToken: createAccessToken(user), expiresIn: 900, user });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to refresh session.' }); }
 });
@@ -363,11 +440,48 @@ app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
     }
     res.json({ user: {
       id: account.id, uid: account.uid, phone: account.phone || '', email: account.email,
-      name: account.name || 'User', role: account.role, businessName: account.businessName || '',
+      name: account.name || 'User', role: account.role, businessName: account.businessName || '', businessAddress: account.businessAddress || '',
       approvalStatus: account.role === 'admin' ? 'ACTIVE' : (String(account.approvalStatus).toUpperCase() === 'APPROVED' ? 'ACTIVE' : account.approvalStatus),
     }});
   } catch {
     res.status(500).json({ error: 'Unable to load current user.' });
+  }
+});
+
+app.put('/api/profile', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
+    const [account] = await db.select().from(users).where(eq(users.id, req.user.id)).limit(1);
+    if (!account) return res.status(404).json({ error: 'Account not found.' });
+
+    const name = String(req.body?.name ?? account.name ?? '').trim();
+    const email = String(req.body?.email ?? account.email ?? '').trim();
+    const businessName = String(req.body?.businessName ?? account.businessName ?? '').trim();
+    const businessAddress = String(req.body?.businessAddress ?? account.businessAddress ?? '').trim();
+
+    if (name.length < 2) return res.status(400).json({ error: 'Enter a valid full name.' });
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+    if (account.role !== 'admin') {
+      if (businessName.length < 2) return res.status(400).json({ error: 'Enter a valid business name.' });
+      if (businessAddress.length < 3) return res.status(400).json({ error: 'Enter a valid business address.' });
+    }
+
+    const [updated] = await db.update(users).set({
+      name,
+      email: email || account.email,
+      businessName: account.role === 'admin' ? account.businessName : businessName,
+      businessAddress: account.role === 'admin' ? account.businessAddress : businessAddress,
+    }).where(eq(users.id, account.id)).returning();
+
+    const status = String(updated.approvalStatus || '').toUpperCase();
+    res.json({ success: true, user: {
+      id: updated.id, businessId: updated.role === 'admin' ? null : updated.id, uid: updated.uid,
+      phone: updated.phone || '', email: updated.email || '', name: updated.name || 'User', role: updated.role,
+      businessName: updated.businessName || '', businessAddress: updated.businessAddress || '',
+      approvalStatus: updated.role === 'admin' ? 'ACTIVE' : (status === 'APPROVED' ? 'ACTIVE' : status),
+    }});
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Unable to update profile.' });
   }
 });
 
@@ -834,7 +948,7 @@ app.post('/api/whatsapp/test', requireAuth, async (req: AuthRequest, res) => {
    ========================================================================= */
 async function metaPlatformConfig() {
   try {
-    const result = await pool.query('SELECT meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version FROM platform_meta_settings WHERE id = 1 LIMIT 1');
+    const result = await pool.query('SELECT meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version, public_base_url, webhook_verify_token FROM platform_meta_settings WHERE id = 1 LIMIT 1');
     const row: any = result.rows?.[0];
     if (row) {
       const dbSecret = decryptSecret(row.meta_app_secret);
@@ -843,7 +957,9 @@ async function metaPlatformConfig() {
           appId: String(row.meta_app_id || '').trim(),
           appSecret: String(dbSecret || '').trim(),
           configId: String(row.embedded_signup_config_id || '').trim(),
-          apiVersion: String(row.graph_api_version || 'v21.0').trim() || 'v21.0',
+          apiVersion: String(row.graph_api_version || 'v26.0').trim() || 'v26.0',
+          publicBaseUrl: String(row.public_base_url || '').trim().replace(/\/$/, ''),
+          webhookVerifyToken: String(decryptSecret(row.webhook_verify_token) || '').trim(),
           source: 'database',
         };
       }
@@ -855,7 +971,9 @@ async function metaPlatformConfig() {
     appId: String(process.env.META_PLATFORM_APP_ID || '').trim(),
     appSecret: String(process.env.META_PLATFORM_APP_SECRET || '').trim(),
     configId: String(process.env.META_EMBEDDED_SIGNUP_CONFIG_ID || '').trim(),
-    apiVersion: String(process.env.META_GRAPH_API_VERSION || 'v21.0').trim() || 'v21.0',
+    apiVersion: String(process.env.META_GRAPH_API_VERSION || 'v26.0').trim() || 'v26.0',
+    publicBaseUrl: String(process.env.PUBLIC_BASE_URL || process.env.META_PUBLIC_BASE_URL || '').trim().replace(/\/$/, ''),
+    webhookVerifyToken: String(process.env.META_WEBHOOK_VERIFY_TOKEN || '').trim(),
   };
   return {
     ...envConfig,
@@ -863,15 +981,67 @@ async function metaPlatformConfig() {
   };
 }
 
+
+async function ensurePlatformWebhookVerifyToken(existing?: string) {
+  const current = String(existing || '').trim();
+  if (current) return current;
+  const generated = `wf_meta_wh_${randomBytes(32).toString('hex')}`;
+  await pool.query(`
+    INSERT INTO platform_meta_settings (id, webhook_verify_token, updated_at)
+    VALUES (1, $1, NOW())
+    ON CONFLICT (id) DO UPDATE SET webhook_verify_token = EXCLUDED.webhook_verify_token, updated_at = NOW()
+  `, [encryptSecret(generated)]);
+  return generated;
+}
+
+
+async function resolveMetaPublicBaseUrl(configuredUrl?: string) {
+  const direct = String(configuredUrl || '').trim().replace(/\/$/, '');
+  if (/^https:\/\//i.test(direct)) return { url: direct, source: 'database' };
+
+  const envUrl = String(process.env.META_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+  if (/^https:\/\//i.test(envUrl)) return { url: envUrl, source: 'environment' };
+
+  // Local development convenience: ngrok exposes its active tunnel list on 127.0.0.1:4040.
+  // This never exposes secrets; it only discovers the temporary HTTPS forwarding URL.
+  try {
+    const response = await fetch('http://127.0.0.1:4040/api/tunnels');
+    if (response.ok) {
+      const body: any = await response.json();
+      const tunnels = Array.isArray(body?.tunnels) ? body.tunnels : [];
+      const httpsTunnel = tunnels.find((t: any) => /^https:\/\//i.test(String(t?.public_url || '')));
+      const url = String(httpsTunnel?.public_url || '').trim().replace(/\/$/, '');
+      if (url) return { url, source: 'ngrok' };
+    }
+  } catch {
+    // ngrok is optional; normal production deployments use a configured HTTPS URL.
+  }
+  return { url: '', source: 'not_available' };
+}
+
+function metaPublicHostname(publicUrl?: string) {
+  try { return new URL(String(publicUrl || '')).hostname; } catch { return ''; }
+}
+
 app.get('/api/admin/meta-platform-settings', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const cfg = await metaPlatformConfig();
+    const webhookVerifyToken = await ensurePlatformWebhookVerifyToken(cfg.webhookVerifyToken);
+    const resolvedPublic = await resolveMetaPublicBaseUrl(cfg.publicBaseUrl);
     res.json({
       configured: Boolean(cfg.appId && cfg.appSecret && cfg.configId),
       metaAppId: cfg.appId,
       appSecretMasked: cfg.appSecret ? maskSecret(cfg.appSecret) : '',
       embeddedSignupConfigId: cfg.configId,
       apiVersion: cfg.apiVersion,
+      publicBaseUrl: cfg.publicBaseUrl || '',
+      detectedPublicBaseUrl: resolvedPublic.url,
+      detectedPublicBaseUrlSource: resolvedPublic.source,
+      oauthRedirectUri: '',
+      embeddedSignupOrigin: resolvedPublic.url || '',
+      embeddedSignupHostname: metaPublicHostname(resolvedPublic.url),
+      webhookCallbackUrl: resolvedPublic.url ? `${resolvedPublic.url}/api/webhooks/whatsapp` : '',
+      webhookVerifyToken,
       source: cfg.source,
     });
   } catch (e: any) {
@@ -884,31 +1054,56 @@ app.put('/api/admin/meta-platform-settings', requireAuth, requireAdmin, async (r
     const current = await metaPlatformConfig();
     const appId = String(req.body?.metaAppId ?? current.appId ?? '').trim();
     const configId = String(req.body?.embeddedSignupConfigId ?? current.configId ?? '').trim();
-    const apiVersion = String(req.body?.apiVersion ?? current.apiVersion ?? 'v21.0').trim() || 'v21.0';
+    const apiVersion = String(req.body?.apiVersion ?? current.apiVersion ?? 'v26.0').trim() || 'v26.0';
+    const publicBaseUrl = String(req.body?.publicBaseUrl ?? current.publicBaseUrl ?? '').trim().replace(/\/$/, '');
     const incomingSecret = String(req.body?.appSecret ?? '').trim();
     const appSecret = incomingSecret && !isMaskedSecret(incomingSecret) ? incomingSecret : current.appSecret;
+    const incomingWebhookToken = String(req.body?.webhookVerifyToken ?? '').trim();
+    const webhookVerifyToken = incomingWebhookToken || current.webhookVerifyToken || `wf_meta_wh_${randomBytes(32).toString('hex')}`;
     if (!appId || !configId || !appSecret) return res.status(400).json({ error: 'Meta App ID, App Secret and Embedded Signup Configuration ID are required.' });
-    if (!/^v\d+\.\d+$/.test(apiVersion)) return res.status(400).json({ error: 'Graph API version must look like v21.0.' });
+    if (publicBaseUrl && !/^https:\/\//i.test(publicBaseUrl)) return res.status(400).json({ error: 'If provided, the Meta callback/backend URL must start with https://. For local development you can leave it blank and run ngrok; WishFlow will detect the tunnel automatically.' });
+    if (!/^v\d+\.\d+$/.test(apiVersion)) return res.status(400).json({ error: 'Graph API version must look like v26.0.' });
     await pool.query(`
-      INSERT INTO platform_meta_settings (id, meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version, updated_at)
-      VALUES (1, $1, $2, $3, $4, NOW())
+      INSERT INTO platform_meta_settings (id, meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version, public_base_url, webhook_verify_token, updated_at)
+      VALUES (1, $1, $2, $3, $4, $5, $6, NOW())
       ON CONFLICT (id) DO UPDATE SET
         meta_app_id = EXCLUDED.meta_app_id,
         meta_app_secret = EXCLUDED.meta_app_secret,
         embedded_signup_config_id = EXCLUDED.embedded_signup_config_id,
         graph_api_version = EXCLUDED.graph_api_version,
+        public_base_url = EXCLUDED.public_base_url,
+        webhook_verify_token = EXCLUDED.webhook_verify_token,
         updated_at = NOW()
-    `, [appId, encryptSecret(appSecret), configId, apiVersion]);
-    res.json({ success: true, configured: true, metaAppId: appId, appSecretMasked: maskSecret(appSecret), embeddedSignupConfigId: configId, apiVersion, source: 'database' });
+    `, [appId, encryptSecret(appSecret), configId, apiVersion, publicBaseUrl, encryptSecret(webhookVerifyToken)]);
+    const resolvedPublic = await resolveMetaPublicBaseUrl(publicBaseUrl);
+    res.json({ success: true, configured: true, metaAppId: appId, appSecretMasked: maskSecret(appSecret), embeddedSignupConfigId: configId, apiVersion, publicBaseUrl, detectedPublicBaseUrl: resolvedPublic.url, detectedPublicBaseUrlSource: resolvedPublic.source, oauthRedirectUri: '', embeddedSignupOrigin: resolvedPublic.url || '', embeddedSignupHostname: metaPublicHostname(resolvedPublic.url), webhookCallbackUrl: resolvedPublic.url ? `${resolvedPublic.url}/api/webhooks/whatsapp` : '', webhookVerifyToken, source: 'database' });
   } catch (e: any) {
     res.status(500).json({ error: e.message || 'Failed to save Meta platform settings.' });
   }
 });
 
 
+
+app.post('/api/admin/meta-platform-settings/regenerate-webhook-token', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const generated = `wf_meta_wh_${randomBytes(32).toString('hex')}`;
+    await pool.query(`
+      INSERT INTO platform_meta_settings (id, webhook_verify_token, updated_at)
+      VALUES (1, $1, NOW())
+      ON CONFLICT (id) DO UPDATE SET webhook_verify_token = EXCLUDED.webhook_verify_token, updated_at = NOW()
+    `, [encryptSecret(generated)]);
+    const cfg = await metaPlatformConfig();
+    const resolvedPublic = await resolveMetaPublicBaseUrl(cfg.publicBaseUrl);
+    res.json({ success: true, webhookVerifyToken: generated, webhookCallbackUrl: resolvedPublic.url ? `${resolvedPublic.url}/api/webhooks/whatsapp` : '' });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message || 'Failed to regenerate webhook verify token.' });
+  }
+});
+
 app.post('/api/admin/meta-platform-settings/test', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const cfg = await metaPlatformConfig();
+    const resolvedPublic = await resolveMetaPublicBaseUrl(cfg.publicBaseUrl);
     if (!cfg.appId || !cfg.appSecret || !cfg.configId) {
       return res.status(400).json({
         success: false,
@@ -932,8 +1127,14 @@ app.post('/api/admin/meta-platform-settings/test', requireAuth, requireAdmin, as
       metaAppId: cfg.appId,
       embeddedSignupConfigId: cfg.configId,
       apiVersion: cfg.apiVersion,
+      publicBaseUrl: resolvedPublic.url,
+      oauthRedirectUri: '',
+      embeddedSignupOrigin: resolvedPublic.url || '',
+      embeddedSignupHostname: metaPublicHostname(resolvedPublic.url),
+      detectedPublicBaseUrl: resolvedPublic.url,
+      detectedPublicBaseUrlSource: resolvedPublic.source,
       source: cfg.source,
-      message: 'WishFlow Meta platform credentials are valid. Business owners can now use Continue with Meta.',
+      message: resolvedPublic.url ? `WishFlow Meta credentials are valid. Meta signup URL detected: ${resolvedPublic.url}` : 'WishFlow Meta credentials are valid. Start ngrok on port 3000 for local Meta/Facebook login.',
     });
   } catch (e: any) {
     return res.status(500).json({ success: false, error: e.message || 'Could not validate Meta platform settings.' });
@@ -944,91 +1145,513 @@ app.get('/api/whatsapp/embedded-signup/readiness', requireAuth, async (req: Auth
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Embedded Signup is available only for business accounts.' });
     const cfg = await metaPlatformConfig();
-    const ready = Boolean(cfg.appId && cfg.appSecret && cfg.configId);
+    const resolvedPublic = await resolveMetaPublicBaseUrl(cfg.publicBaseUrl);
+    const credentialsReady = Boolean(cfg.appId && cfg.appSecret && cfg.configId);
+    const ready = Boolean(credentialsReady && resolvedPublic.url);
     return res.json({
       ready,
+      credentialsReady,
       apiVersion: cfg.apiVersion,
+      publicBaseUrl: resolvedPublic.url,
+      publicBaseUrlSource: resolvedPublic.source,
       source: cfg.source,
-      reason: ready ? null : 'WishFlow Meta platform setup has not been completed by the Super Admin.',
+      reason: ready ? null : !credentialsReady
+        ? 'WishFlow Meta platform setup is incomplete. Ask the Super Admin to save the Meta App ID, App Secret and Embedded Signup Configuration ID.'
+        : 'No HTTPS Meta callback is available. For local development start ngrok with: ngrok http 3000. WishFlow will detect it automatically.',
     });
   } catch (e: any) {
     return res.status(500).json({ error: e.message || 'Could not check Meta Embedded Signup readiness.' });
   }
 });
 
+function hashMetaSignupState(value: string) {
+  return createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function cleanMetaError(body: any, fallback: string) {
+  const err = body?.error || body;
+  return String(err?.error_user_msg || err?.error_user_title || err?.message || fallback || 'Meta API request failed.');
+}
+
+function escapeHtml(value: any) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function metaGraphJson(url: string, init: RequestInit = {}) {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  let body: any = {};
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+  if (!response.ok || body?.error) {
+    const error: any = new Error(cleanMetaError(body, `Meta API request failed (HTTP ${response.status}).`));
+    error.meta = body?.error || body;
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return body;
+}
+
+async function exchangeMetaEmbeddedSignupCode(cfg: any, code: string, redirectUri?: string) {
+  // Codes returned by the Embedded Signup Builder / Facebook JS SDK are
+  // exchanged server-side. For the current Builder flow Meta does not require
+  // us to invent a redirect URI; including a different URI can invalidate the
+  // short-lived code. Keep redirect_uri optional for backward compatibility
+  // with the older redirect-based flow retained below.
+  const params = new URLSearchParams({
+    client_id: cfg.appId,
+    client_secret: cfg.appSecret,
+    code,
+  });
+  const normalizedRedirect = String(redirectUri || '').trim();
+  if (normalizedRedirect) params.set('redirect_uri', normalizedRedirect);
+  const tokenUrl = `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/oauth/access_token?${params.toString()}`;
+  const body: any = await metaGraphJson(tokenUrl);
+  const token = String(body?.access_token || '').trim();
+  if (!token) throw new Error('Meta did not return a business access token.');
+  return { accessToken: token, expiresIn: Number(body?.expires_in || 0) || null };
+}
+
+async function getMetaAppAccessToken(cfg: any) {
+  const params = new URLSearchParams({ client_id: cfg.appId, client_secret: cfg.appSecret, grant_type: 'client_credentials' });
+  try {
+    const body: any = await metaGraphJson(`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/oauth/access_token?${params.toString()}`);
+    return String(body?.access_token || `${cfg.appId}|${cfg.appSecret}`);
+  } catch {
+    return `${cfg.appId}|${cfg.appSecret}`;
+  }
+}
+
+async function discoverMetaWhatsappAssets(cfg: any, accessToken: string, hints: any = {}) {
+  let wabaId = String(hints.wabaId || '').trim();
+  let phoneNumberId = String(hints.phoneNumberId || '').trim();
+  let metaBusinessId = String(hints.businessId || '').trim();
+
+  // The system-user token generated by Embedded Signup normally includes the
+  // granted WhatsApp assets in debug_token.granular_scopes.target_ids.  Rather
+  // than assuming the first target ID is a WABA, test each candidate against
+  // /{candidate}/phone_numbers and keep the first real WABA.
+  const candidateWabaIds: string[] = [];
+  try {
+    const appAccessToken = await getMetaAppAccessToken(cfg);
+    const debug: any = await metaGraphJson(
+      `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/debug_token?input_token=${encodeURIComponent(accessToken)}`,
+      { headers: { Authorization: `Bearer ${appAccessToken}` } },
+    );
+    const scopes = Array.isArray(debug?.data?.granular_scopes) ? debug.data.granular_scopes : [];
+    for (const item of scopes) {
+      const scope = String(item?.scope || '');
+      if (!['whatsapp_business_management', 'whatsapp_business_messaging', 'business_management'].includes(scope)) continue;
+      for (const raw of (Array.isArray(item?.target_ids) ? item.target_ids : [])) {
+        const id = String(raw || '').trim();
+        if (id && !candidateWabaIds.includes(id)) candidateWabaIds.push(id);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[Meta] debug_token asset discovery failed:', e?.message);
+  }
+
+  const tryWaba = async (candidate: string) => {
+    if (!candidate) return false;
+    try {
+      const body: any = await metaGraphJson(
+        `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(candidate)}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status&limit=100&access_token=${encodeURIComponent(accessToken)}`,
+      );
+      const phones = Array.isArray(body?.data) ? body.data : [];
+      if (!phones.length) return false;
+      wabaId = candidate;
+      if (!phoneNumberId) phoneNumberId = String(phones[0]?.id || '').trim();
+      return Boolean(phoneNumberId);
+    } catch {
+      return false;
+    }
+  };
+
+  if (wabaId) await tryWaba(wabaId);
+  if ((!wabaId || !phoneNumberId) && candidateWabaIds.length) {
+    for (const id of candidateWabaIds) {
+      if (await tryWaba(id)) break;
+    }
+  }
+
+  // Fallback: enumerate business portfolios visible to the connected system user.
+  // Check both owned and client/shared WABAs because businesses can be onboarded
+  // under either relationship depending on the Meta Business configuration.
+  if (!wabaId || !phoneNumberId) {
+    try {
+      const businesses: any = await metaGraphJson(
+        `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/me/businesses?fields=id,name&limit=100&access_token=${encodeURIComponent(accessToken)}`,
+      );
+      for (const business of (Array.isArray(businesses?.data) ? businesses.data : [])) {
+        const bid = String(business?.id || '').trim();
+        if (!bid) continue;
+        for (const edge of ['owned_whatsapp_business_accounts', 'client_whatsapp_business_accounts']) {
+          try {
+            const wab: any = await metaGraphJson(
+              `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(bid)}/${edge}?fields=id,name&limit=100&access_token=${encodeURIComponent(accessToken)}`,
+            );
+            for (const row of (Array.isArray(wab?.data) ? wab.data : [])) {
+              const id = String(row?.id || '').trim();
+              if (id && await tryWaba(id)) {
+                metaBusinessId = metaBusinessId || bid;
+                break;
+              }
+            }
+          } catch {}
+          if (wabaId && phoneNumberId) break;
+        }
+        if (wabaId && phoneNumberId) break;
+      }
+    } catch (e: any) {
+      console.warn('[Meta] business/WABA enumeration failed:', e?.message);
+    }
+  }
+
+  if (!wabaId || !phoneNumberId) {
+    throw new Error('Meta login completed, but no WhatsApp Business Account with a phone number was granted. In Meta, use the WhatsApp Embedded Signup login variation, choose the WhatsApp account/number, and grant whatsapp_business_management and whatsapp_business_messaging.');
+  }
+  return { wabaId, phoneNumberId, metaBusinessId };
+}
+
+async function finishMetaEmbeddedSignup(user: any, code: string, cfg: any, options: any = {}) {
+  const tokenResult = await exchangeMetaEmbeddedSignupCode(cfg, code, options.redirectUri);
+  const accessToken = tokenResult.accessToken;
+  const assets = await discoverMetaWhatsappAssets(cfg, accessToken, options);
+  const details = await WhatsAppService.testConnection(assets.phoneNumberId, accessToken, cfg.apiVersion);
+  if (!details.success) {
+    throw new Error(details.error || 'Meta granted access, but the WhatsApp phone number could not be verified.');
+  }
+
+  const enc = encryptedCredentialValues({
+    accessToken,
+    // The Meta App Secret is platform-owned, but keeping the existing encrypted
+    // column populated preserves compatibility with the current credential resolver.
+    metaAppSecret: cfg.appSecret,
+    webhookVerifyToken: randomBytes(24).toString('hex'),
+  });
+  const [existing] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, user.id)).limit(1);
+  const values: any = {
+    metaAppId: cfg.appId,
+    businessAccountId: assets.wabaId,
+    phoneNumberId: assets.phoneNumberId,
+    metaBusinessId: assets.metaBusinessId,
+    apiVersion: cfg.apiVersion,
+    ...enc,
+    businessPhone: details.phoneNumber || '',
+    connectionStatus: 'CONNECTED',
+    status: 'CONNECTED',
+    displayPhoneNumber: details.phoneNumber || null,
+    verifiedName: details.verifiedName || null,
+    qualityRating: details.qualityRating || null,
+    lastConnectionError: null,
+    lastTestedAt: new Date(),
+    updatedAt: new Date(),
+  };
+  if (existing) {
+    await db.update(whatsappAccounts).set(values).where(eq(whatsappAccounts.id, existing.id));
+  } else {
+    await db.insert(whatsappAccounts).values({ ownerUserId: user.id, ...values });
+  }
+
+  let subscribed = false;
+  try {
+    await metaGraphJson(
+      `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(assets.wabaId)}/subscribed_apps`,
+      { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    subscribed = true;
+  } catch (e: any) {
+    console.warn('[Meta] WABA subscribed_apps warning:', e?.message);
+  }
+
+  // Pull the business's real templates immediately so the account is ready for
+  // automation as soon as onboarding finishes.
+  try {
+    const templateResult = await WhatsAppService.fetchTemplates(assets.wabaId, accessToken, cfg.apiVersion);
+    if (templateResult.success && Array.isArray(templateResult.templates)) {
+      for (const tpl of templateResult.templates) {
+        const metaId = String((tpl as any).id || '').trim() || `${user.id}:${(tpl as any).name}:${(tpl as any).language}`;
+        const components = Array.isArray((tpl as any).components) ? (tpl as any).components : [];
+        const bodyText = String(components.find((c:any)=>String(c?.type||'').toUpperCase()==='BODY')?.text || '');
+        const variableCount = Math.max(0, ...Array.from(bodyText.matchAll(/\{\{(\d+)\}\}/g)).map((m:any)=>Number(m[1])||0));
+        const existingTpl = await db.select().from(messageTemplates).where(and(eq(messageTemplates.ownerUserId, user.id), eq(messageTemplates.metaTemplateId, metaId))).limit(1);
+        const tplValues:any = {
+          ownerUserId:user.id, metaTemplateId:metaId, name:String((tpl as any).name||''), language:String((tpl as any).language||'en_US'),
+          category:String((tpl as any).category||'MARKETING'), status:String((tpl as any).status||'PENDING'), components, variableCount, lastSyncedAt:new Date(), updatedAt:new Date(),
+        };
+        if (existingTpl.length) await db.update(messageTemplates).set(tplValues).where(eq(messageTemplates.id, existingTpl[0].id));
+        else await db.insert(messageTemplates).values(tplValues);
+      }
+    }
+  } catch (e:any) {
+    console.warn('[Meta] Initial template sync warning:', e?.message);
+  }
+
+  return {
+    success: true,
+    connectionStatus: 'CONNECTED',
+    wabaId: assets.wabaId,
+    phoneNumberId: assets.phoneNumberId,
+    displayPhoneNumber: details.phoneNumber,
+    verifiedName: details.verifiedName,
+    qualityRating: details.qualityRating,
+    subscribed,
+    accessTokenStored: true,
+  };
+}
+
 app.post('/api/whatsapp/embedded-signup/session', requireAuth, async (req:AuthRequest,res)=>{
   try {
     if(req.user?.role==='admin') return res.status(403).json({error:'Embedded Signup is available only for business accounts.'});
     const cfg=await metaPlatformConfig();
-    if(!cfg.appId || !cfg.appSecret || !cfg.configId) return res.status(503).json({code:'META_PLATFORM_NOT_CONFIGURED',error:'WishFlow Meta platform setup is incomplete. The Super Admin must save the Meta App ID, App Secret and Embedded Signup Configuration ID once before business owners can use Facebook/Meta login.'});
-    const token=createPurposeToken(req.user!,'meta_embedded_signup',10*60);
-    const base=String(req.body?.baseUrl || '').trim();
-    const relative=`/meta/embedded-signup?token=${encodeURIComponent(token)}`;
-    res.json({url: base ? `${base.replace(/\/$/,'')}${relative}` : relative, expiresIn:600});
-  } catch(e:any){res.status(500).json({error:e.message||'Failed to start Meta Embedded Signup.'});}
+    if(!cfg.appId || !cfg.appSecret || !cfg.configId) return res.status(503).json({code:'META_PLATFORM_NOT_CONFIGURED',error:'WishFlow Meta platform setup is incomplete. The Super Admin must save the Meta App ID, App Secret and Embedded Signup Configuration ID once before business owners can use Meta login.'});
+    const resolvedPublic = await resolveMetaPublicBaseUrl(cfg.publicBaseUrl);
+    if (!resolvedPublic.url) return res.status(503).json({code:'META_TUNNEL_REQUIRED',error:'Meta Embedded Signup requires an HTTPS page. For local development run `ngrok http 3000`; WishFlow will detect the active HTTPS tunnel automatically.'});
+
+    const sessionId = randomBytes(18).toString('hex');
+    // This one-time launch secret never needs to reach Meta. It is stored only
+    // as a SHA-256 hash and is placed in the URL fragment so it is not sent to
+    // ngrok/server access logs by the browser.
+    const launchSecret = randomBytes(32).toString('hex');
+    const stateHash = hashMetaSignupState(launchSecret);
+    const legacyRedirectUri=`${resolvedPublic.url}/meta/embedded-signup/callback`;
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await pool.query(`INSERT INTO meta_embedded_signup_sessions (session_id,user_id,state_hash,status,redirect_uri,expires_at,created_at,updated_at) VALUES ($1,$2,$3,'PENDING',$4,$5,NOW(),NOW())`, [sessionId, req.user!.id, stateHash, legacyRedirectUri, expiresAt]);
+
+    // Start from our HTTPS bridge page. That page invokes Meta Login for Business
+    // directly with the configured configuration ID, avoiding a dependency on
+    // the Facebook JavaScript SDK on the customer's browser.
+    const startUrl=`${resolvedPublic.url}/meta/embedded-signup/start?session=${encodeURIComponent(sessionId)}#token=${encodeURIComponent(launchSecret)}`;
+    return res.json({
+      sessionId,
+      url:startUrl,
+      flow:'EMBEDDED_SIGNUP_BUILDER',
+      publicBaseUrl:resolvedPublic.url,
+      publicBaseUrlSource:resolvedPublic.source,
+      expiresIn:900,
+    });
+  } catch(e:any){return res.status(500).json({error:e.message||'Failed to start Meta Embedded Signup.'});}
 });
 
-app.get('/meta/embedded-signup', async (req,res)=>{
-  const token=String(req.query.token||'');
-  const user=verifyPurposeToken(token,'meta_embedded_signup');
-  if(!user || user.role==='admin') return res.status(401).type('html').send('<h2>Embedded Signup session expired.</h2><p>Return to WishFlow and start again.</p>');
-  const cfg=await metaPlatformConfig();
-  if(!cfg.appId || !cfg.configId) return res.status(503).type('html').send('<h2>Meta Embedded Signup is not configured.</h2><p>Configure it from WishFlow Admin Settings → Meta Platform Setup, then try again.</p>');
-  const safe=(v:string)=>JSON.stringify(v).replace(/</g,'\\u003c');
-  res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-  body{font-family:Arial,sans-serif;margin:0;background:#f4fbf7;color:#10231a}.wrap{padding:22px;max-width:560px;margin:auto}.card{background:white;border:1px solid #dfece5;border-radius:20px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.05)}
-  .step{display:flex;gap:12px;margin:15px 0;align-items:flex-start}.dot{width:28px;height:28px;border-radius:50%;background:#e8f8ef;color:#079455;display:grid;place-items:center;font-weight:700}.btn{width:100%;padding:15px;border:0;border-radius:14px;background:#079455;color:white;font-weight:700;font-size:16px}.muted{color:#66756e;line-height:1.5}.status{padding:12px;border-radius:12px;background:#f3f6f4;margin-top:14px;white-space:pre-wrap}</style></head><body>
-  <div class="wrap"><div class="card"><h2>Connect WhatsApp Business</h2><p class="muted">Complete the Meta verification inside WishFlow. Your Facebook password is entered only on Meta's secure login.</p>
-  <div class="step"><div class="dot">1</div><div><b>Sign in to Meta</b><div class="muted">Authenticate using Meta Business Login.</div></div></div>
-  <div class="step"><div class="dot">2</div><div><b>Select Business Portfolio & WABA</b><div class="muted">Choose or create the WhatsApp Business Account.</div></div></div>
-  <div class="step"><div class="dot">3</div><div><b>Select WhatsApp number</b><div class="muted">Choose/register the phone number used for messaging.</div></div></div>
-  <div class="step"><div class="dot">4</div><div><b>Grant permissions</b><div class="muted">WishFlow receives authorization, WABA and phone-number mapping.</div></div></div>
-  <button class="btn" id="connect" disabled style="opacity:.55">Loading Meta…</button><div class="status" id="status">Preparing secure Meta Business Login…</div></div></div>
-  <div id="fb-root"></div><script>
-  const SESSION_TOKEN=${safe(token)}, APP_ID=${safe(cfg.appId)}, CONFIG_ID=${safe(cfg.configId)}, API_VERSION=${safe(cfg.apiVersion)};
-  let signupData={}; const status=(t)=>document.getElementById('status').textContent=t; const btn=document.getElementById('connect');
-  window.addEventListener('message',(event)=>{try{if(!String(event.origin||'').includes('facebook.com'))return;const d=typeof event.data==='string'?JSON.parse(event.data):event.data;if(d?.type==='WA_EMBEDDED_SIGNUP'){signupData=d.data||{};status('WhatsApp Business Account selected. Waiting for Meta authorization…');}}catch(e){}});
-  window.fbAsyncInit=function(){try{FB.init({appId:APP_ID,cookie:true,xfbml:false,version:API_VERSION});btn.disabled=false;btn.style.opacity='1';btn.textContent='Continue with Meta';status('Ready. Tap Continue with Meta to sign in with your own Facebook/Meta account.');}catch(e){status('Could not initialize Meta Business Login: '+e.message);}};
-  (function(d,s,id){let js,fjs=d.getElementsByTagName(s)[0];if(d.getElementById(id))return;js=d.createElement(s);js.id=id;js.async=true;js.defer=true;js.src='https://connect.facebook.net/en_US/sdk.js';js.onerror=()=>status('Could not load Meta Business Login. Check internet access and try again.');fjs.parentNode.insertBefore(js,fjs);}(document,'script','facebook-jssdk'));
-  async function complete(code){
-    status('Saving authorization securely in WishFlow…');
-    const r=await fetch('/api/whatsapp/embedded-signup/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionToken:SESSION_TOKEN,code,wabaId:signupData.waba_id||signupData.wabaId||'',phoneNumberId:signupData.phone_number_id||signupData.phoneNumberId||'',businessId:signupData.business_id||signupData.businessId||''})});
-    const j=await r.json(); if(!r.ok)throw new Error(j.error||'Unable to complete connection.');
-    status('✓ Meta account authenticated\n✓ WABA selected\n✓ Phone number linked\n✓ Credentials encrypted and stored\n✓ Connection verified');
-    if(window.WishFlow) WishFlow.postMessage('connected');
+app.get('/api/whatsapp/embedded-signup/session/:sessionId', requireAuth, async (req:AuthRequest,res)=>{
+  try {
+    const sessionId=String(req.params.sessionId||'');
+    const result=await pool.query(`SELECT session_id,status,error_message,waba_id,phone_number_id,display_phone_number,verified_name,expires_at,completed_at FROM meta_embedded_signup_sessions WHERE session_id=$1 AND user_id=$2 LIMIT 1`,[sessionId,req.user!.id]);
+    const row:any=result.rows?.[0];
+    if(!row) return res.status(404).json({error:'Meta signup session not found.'});
+    if(new Date(row.expires_at).getTime()<Date.now() && row.status==='PENDING') {
+      await pool.query(`UPDATE meta_embedded_signup_sessions SET status='EXPIRED',error_message='This Meta signup session expired. Start again.',updated_at=NOW() WHERE session_id=$1`,[sessionId]);
+      row.status='EXPIRED'; row.error_message='This Meta signup session expired. Start again.';
+    }
+    return res.json({sessionId:row.session_id,status:row.status,error:row.error_message||null,wabaId:row.waba_id||null,phoneNumberId:row.phone_number_id||null,displayPhoneNumber:row.display_phone_number||null,verifiedName:row.verified_name||null,completedAt:row.completed_at||null});
+  } catch(e:any){return res.status(500).json({error:e.message||'Could not read Meta signup status.'});}
+});
+
+app.get('/meta/embedded-signup/start', async (req,res)=>{
+  try {
+    const sessionId=String(req.query.session||'').trim();
+    if(!sessionId) return res.status(400).type('html').send('<h2>Missing WishFlow signup session.</h2>');
+    const sessionResult=await pool.query(`SELECT session_id,status,expires_at FROM meta_embedded_signup_sessions WHERE session_id=$1 LIMIT 1`,[sessionId]);
+    const session:any=sessionResult.rows?.[0];
+    if(!session) return res.status(404).type('html').send('<h2>WishFlow signup session not found.</h2><p>Return to WishFlow and start again.</p>');
+    if(session.status!=='PENDING') return res.status(409).type('html').send(`<h2>Signup session is ${escapeHtml(session.status)}.</h2><p>Return to WishFlow to see the current connection status.</p><a href="wishflow://meta-connected">Return to WishFlow</a>`);
+    if(new Date(session.expires_at).getTime()<Date.now()) {
+      await pool.query(`UPDATE meta_embedded_signup_sessions SET status='EXPIRED',error_message='Session expired',updated_at=NOW() WHERE session_id=$1`,[sessionId]);
+      return res.status(410).type('html').send('<h2>Meta signup session expired.</h2><p>Return to WishFlow and start again.</p>');
+    }
+    const cfg=await metaPlatformConfig();
+    if(!cfg.appId || !cfg.configId) return res.status(503).type('html').send('<h2>WishFlow Meta configuration is incomplete.</h2><p>Ask the Super Admin to configure the Meta App ID and Embedded Signup Configuration ID.</p>');
+
+    res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma','no-cache');
+    res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
+    res.setHeader('X-Content-Type-Options','nosniff');
+    // This page no longer waits for the Facebook JS SDK. Some mobile browsers,
+    // privacy extensions and enterprise networks block connect.facebook.net,
+    // which left the customer stuck on "Loading Meta…". Instead, the button
+    // invokes Facebook Login for Business directly with the Embedded Signup
+    // Builder configuration ID. Meta still owns the login/onboarding UI.
+    res.setHeader('Content-Security-Policy', "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';");
+
+    const safeSessionId=escapeHtml(sessionId);
+    return res.type('html').send(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <title>Connect WhatsApp Business — WishFlow</title>
+  <style>
+    :root{color-scheme:light}*{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:#f5fbf8;color:#10231a}.wrap{max-width:620px;margin:0 auto;padding:22px 16px 50px}.card{background:#fff;border:1px solid #dce9e2;border-radius:24px;padding:24px;box-shadow:0 12px 38px rgba(16,35,26,.06)}h1{margin:0 0 10px;font-size:28px}p{line-height:1.5;color:#5f6f67}.steps{margin:22px 0}.step{display:flex;gap:12px;margin:14px 0}.n{width:34px;height:34px;border-radius:50%;background:#e3f7ed;color:#07864d;display:grid;place-items:center;font-weight:800;flex:0 0 34px}.step b{display:block;margin:3px 0}.btn{display:block;width:100%;border:0;border-radius:15px;padding:16px 18px;font-size:17px;font-weight:800;background:#0866ff;color:#fff;cursor:pointer;text-align:center;text-decoration:none}.status{margin-top:14px;padding:13px 14px;border-radius:13px;background:#eef5ff;color:#21436b;white-space:pre-wrap}.error{background:#fff0f0;color:#b42318}.note{margin-top:14px;padding:12px;border-radius:12px;background:#fff8e6;color:#73510d;font-size:13px}.small{font-size:12px;color:#76857d;margin-top:14px}.meta{font-weight:800;color:#0866ff}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Connect WhatsApp Business</h1>
+    <p>Continue to <span class="meta">Meta</span> to sign in with this business owner's own Facebook/Meta account. The Embedded Signup Builder configuration will control the WhatsApp assets and permissions. WishFlow never receives the Facebook password.</p>
+    <div class="steps">
+      <div class="step"><span class="n">1</span><div><b>Sign in to Meta</b><span>Authenticate on Meta's own secure page.</span></div></div>
+      <div class="step"><span class="n">2</span><div><b>Choose Business Portfolio & WABA</b><span>Select or create this customer's WhatsApp Business Account.</span></div></div>
+      <div class="step"><span class="n">3</span><div><b>Choose WhatsApp number</b><span>Select/register the number used by this business.</span></div></div>
+      <div class="step"><span class="n">4</span><div><b>Grant permissions</b><span>Meta returns a short-lived authorization code to WishFlow.</span></div></div>
+    </div>
+    <a id="connectBtn" class="btn" href="#">Continue with Facebook / Meta</a>
+    <div id="status" class="status">Ready. Tap Continue with Facebook / Meta.</div>
+    <div class="note">After Meta finishes, WishFlow exchanges the authorization code on the backend, discovers the WABA and Phone Number ID, encrypts the business access token, subscribes webhooks, syncs approved templates, and marks this business ready for automation.</div>
+    <div class="small">Session: ${safeSessionId.slice(0,10)}…</div>
+  </div>
+</div>
+<script>
+(() => {
+  const APP_ID = ${JSON.stringify(String(cfg.appId))};
+  const CONFIG_ID = ${JSON.stringify(String(cfg.configId))};
+  const API_VERSION = ${JSON.stringify(String(cfg.apiVersion || 'v26.0'))};
+  const btn = document.getElementById('connectBtn');
+  const status = document.getElementById('status');
+
+  function launchSecret() {
+    const raw = String(location.hash || '').replace(/^#/, '');
+    return new URLSearchParams(raw).get('token') || '';
   }
-  btn.onclick=()=>{
-    if(typeof FB==='undefined'){status('Meta SDK is still loading. Please wait a moment and try again.');return;}
-    status('Opening Meta Business Login…'); btn.disabled=true;
-    FB.login(async function(response){try{const code=response?.authResponse?.code;if(!code){status('Meta login was cancelled or Meta did not return an authorization code.');btn.disabled=false;return;}await complete(code);}catch(e){status('Error: '+e.message);btn.disabled=false;if(window.WishFlow)WishFlow.postMessage('error:'+e.message);}}, {config_id:CONFIG_ID,response_type:'code',override_default_response_type:true,extras:{setup:{}}});
-  };
-  </script></body></html>`);
+
+  function buildMetaUrl() {
+    const state = launchSecret();
+    if (!state) throw new Error('This WishFlow signup link is missing its secure session token. Return to WishFlow and start again.');
+    const redirectUri = location.origin + '/meta/embedded-signup/callback';
+    const p = new URLSearchParams({
+      client_id: APP_ID,
+      redirect_uri: redirectUri,
+      state,
+      config_id: CONFIG_ID,
+      response_type: 'code',
+      override_default_response_type: 'true',
+      auth_type: 'rerequest'
+    });
+    return 'https://www.facebook.com/' + encodeURIComponent(API_VERSION) + '/dialog/oauth?' + p.toString();
+  }
+
+  btn.addEventListener('click', (event) => {
+    event.preventDefault();
+    try {
+      const url = buildMetaUrl();
+      status.textContent = 'Opening Meta Business Login…';
+      // Use a full-page redirect instead of a popup. This works reliably on
+      // Android Chrome/Brave and does not depend on connect.facebook.net.
+      location.assign(url);
+    } catch (e) {
+      status.textContent = e && e.message ? e.message : String(e);
+      status.className = 'status error';
+    }
+  });
+})();
+</script>
+</body>
+</html>`);
+  } catch(e:any) {
+    return res.status(500).type('html').send(`<h2>Could not prepare Meta Embedded Signup.</h2><p>${escapeHtml(e.message||e)}</p>`);
+  }
 });
 
+app.post('/meta/embedded-signup/complete', async (req,res)=>{
+  try {
+    const sessionId=String(req.body?.sessionId||'').trim();
+    const launchToken=String(req.body?.launchToken||'').trim();
+    const code=String(req.body?.code||'').trim();
+    if(!sessionId || !launchToken || !code) return res.status(400).json({error:'Meta signup session, secure launch token and authorization code are required.'});
+    const stateHash=hashMetaSignupState(launchToken);
+    const sessionResult=await pool.query(`SELECT session_id,user_id,status,expires_at FROM meta_embedded_signup_sessions WHERE session_id=$1 AND state_hash=$2 LIMIT 1`,[sessionId,stateHash]);
+    const session:any=sessionResult.rows?.[0];
+    if(!session) return res.status(401).json({error:'WishFlow could not validate this Meta signup session. Start again from the app.'});
+    if(new Date(session.expires_at).getTime()<Date.now()) {
+      await pool.query(`UPDATE meta_embedded_signup_sessions SET status='EXPIRED',error_message='Session expired',updated_at=NOW() WHERE session_id=$1`,[sessionId]);
+      return res.status(410).json({error:'This Meta signup session expired. Start again from WishFlow.'});
+    }
+    if(session.status==='CONNECTED') {
+      const existing=await pool.query(`SELECT waba_id,phone_number_id,display_phone_number,verified_name FROM meta_embedded_signup_sessions WHERE session_id=$1 LIMIT 1`,[sessionId]);
+      const row:any=existing.rows?.[0]||{};
+      return res.json({success:true,alreadyConnected:true,wabaId:row.waba_id||null,phoneNumberId:row.phone_number_id||null,displayPhoneNumber:row.display_phone_number||null,verifiedName:row.verified_name||null});
+    }
+    if(session.status!=='PENDING') return res.status(409).json({error:`This Meta signup session is ${session.status}. Start a new connection from WishFlow.`});
+
+    const userResult=await db.select().from(users).where(eq(users.id,Number(session.user_id))).limit(1);
+    const user:any=userResult[0];
+    if(!user || user.role==='admin') throw new Error('Business account not found for this signup session.');
+    const cfg=await metaPlatformConfig();
+    const result=await finishMetaEmbeddedSignup(user,code,cfg,{
+      // Builder/JS SDK code exchange should not be coupled to our legacy OAuth
+      // callback URI. The WABA/phone hints come from the official session event.
+      redirectUri:'',
+      wabaId:String(req.body?.wabaId||'').trim(),
+      phoneNumberId:String(req.body?.phoneNumberId||'').trim(),
+      businessId:String(req.body?.businessId||'').trim(),
+    });
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='CONNECTED',waba_id=$2,phone_number_id=$3,display_phone_number=$4,verified_name=$5,completed_at=NOW(),updated_at=NOW() WHERE session_id=$1`,[sessionId,result.wabaId,result.phoneNumberId,result.displayPhoneNumber||null,result.verifiedName||null]);
+    return res.json(result);
+  } catch(e:any) {
+    const sessionId=String(req.body?.sessionId||'').trim();
+    const message=String(e?.message||e);
+    if(sessionId) {
+      try { await pool.query(`UPDATE meta_embedded_signup_sessions SET status='FAILED',error_message=$2,updated_at=NOW() WHERE session_id=$1 AND status='PENDING'`,[sessionId,message]); } catch {}
+    }
+    return res.status(500).json({error:message});
+  }
+});
+
+// Convenience URL retained for old bookmarks. New builds create a secure
+// business-specific session first, then open /meta/embedded-signup/start.
+app.get('/meta/embedded-signup', async (_req,res)=>{
+  return res.status(410).type('html').send('<meta name="viewport" content="width=device-width,initial-scale=1"><div style="font-family:Arial;padding:28px"><h2>Start Meta signup from WishFlow</h2><p>Return to the WishFlow app and tap Continue with Meta. WishFlow will open the Embedded Signup Builder flow linked to your business account.</p></div>');
+});
+
+app.get('/meta/embedded-signup/callback', async (req,res)=>{
+  const state=String(req.query.state||'').trim();
+  const stateHash=hashMetaSignupState(state);
+  const sessionResult=await pool.query(`SELECT session_id,user_id,status,redirect_uri,expires_at FROM meta_embedded_signup_sessions WHERE state_hash=$1 LIMIT 1`,[stateHash]);
+  const session:any=sessionResult.rows?.[0];
+  if(!session) return res.status(401).type('html').send('<h2>Meta signup session not found.</h2><p>Return to WishFlow and start again.</p>');
+  if(new Date(session.expires_at).getTime()<Date.now()) {
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='EXPIRED',error_message='Session expired',updated_at=NOW() WHERE session_id=$1`,[session.session_id]);
+    return res.status(400).type('html').send('<h2>Meta signup session expired.</h2><p>Return to WishFlow and start again.</p>');
+  }
+  const error=String(req.query.error_description||req.query.error_message||req.query.error||'').trim();
+  if(error) {
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='FAILED',error_message=$2,updated_at=NOW() WHERE session_id=$1`,[session.session_id,error]);
+    return res.status(400).type('html').send(`<meta name="viewport" content="width=device-width,initial-scale=1"><div style="font-family:Arial;padding:28px"><h2>Meta connection was not completed</h2><p>${error.replace(/[<>&]/g,'')}</p><a href="wishflow://meta-connected">Return to WishFlow</a></div>`);
+  }
+  const code=String(req.query.code||'').trim();
+  if(!code) {
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='FAILED',error_message='Meta did not return an authorization code.',updated_at=NOW() WHERE session_id=$1`,[session.session_id]);
+    return res.status(400).type('html').send('<h2>Meta did not return an authorization code.</h2><p>Return to WishFlow and try again.</p>');
+  }
+  try {
+    const userResult=await db.select().from(users).where(eq(users.id,Number(session.user_id))).limit(1);
+    const user:any=userResult[0];
+    if(!user || user.role==='admin') throw new Error('Business account not found for this signup session.');
+    const cfg=await metaPlatformConfig();
+    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(session.redirect_uri||'')});
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='CONNECTED',waba_id=$2,phone_number_id=$3,display_phone_number=$4,verified_name=$5,completed_at=NOW(),updated_at=NOW() WHERE session_id=$1`,[session.session_id,result.wabaId,result.phoneNumberId,result.displayPhoneNumber||null,result.verifiedName||null]);
+    const phone=String(result.displayPhoneNumber||''); const name=String(result.verifiedName||'WhatsApp Business');
+    return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial;background:#f4fbf7;margin:0;padding:28px;color:#10231a}.card{max-width:520px;margin:40px auto;background:#fff;border-radius:22px;padding:26px;border:1px solid #dfece5;text-align:center}.ok{font-size:52px;color:#079455}.btn{display:block;margin-top:22px;padding:15px;border-radius:14px;background:#079455;color:#fff;text-decoration:none;font-weight:700}.muted{color:#667085}</style></head><body><div class="card"><div class="ok">✓</div><h2>WhatsApp Business Connected</h2><p><b>${name.replace(/[<>&]/g,'')}</b></p><p>${phone.replace(/[<>&]/g,'')}</p><p>WishFlow securely stored this business's WABA ID, Phone Number ID and encrypted access token. Approved templates are being synchronized and automations can now use this account.</p><p class="muted">You can close this browser if WishFlow does not open automatically.</p><a class="btn" href="wishflow://meta-connected">Return to WishFlow</a></div><script>setTimeout(()=>{location.href='wishflow://meta-connected'},900)</script></body></html>`);
+  } catch(e:any) {
+    const message=String(e?.message||e);
+    await pool.query(`UPDATE meta_embedded_signup_sessions SET status='FAILED',error_message=$2,updated_at=NOW() WHERE session_id=$1`,[session.session_id,message]);
+    return res.status(500).type('html').send(`<meta name="viewport" content="width=device-width,initial-scale=1"><div style="font-family:Arial;padding:28px"><h2>Meta connection could not be completed</h2><p>${message.replace(/[<>&]/g,'')}</p><p>Return to WishFlow, correct the Meta app/configuration if necessary, and try again.</p><a href="wishflow://meta-connected">Return to WishFlow</a></div>`);
+  }
+});
+
+// Backward-compatible completion endpoint for older app builds.
 app.post('/api/whatsapp/embedded-signup/complete', async (req,res)=>{
   try {
     const sessionToken=String(req.body?.sessionToken||''); const user=verifyPurposeToken(sessionToken,'meta_embedded_signup');
     if(!user || user.role==='admin') return res.status(401).json({error:'Embedded Signup session expired.'});
     const cfg=await metaPlatformConfig(); const code=String(req.body?.code||'').trim();
     if(!code) return res.status(400).json({error:'Meta authorization code is missing.'});
-    const tokenUrl=`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/oauth/access_token?client_id=${encodeURIComponent(cfg.appId)}&client_secret=${encodeURIComponent(cfg.appSecret)}&code=${encodeURIComponent(code)}`;
-    const tr=await fetch(tokenUrl); const tj:any=await tr.json();
-    if(!tr.ok || !tj.access_token) return res.status(400).json({error:tj?.error?.message||'Meta token exchange failed.'});
-    const accessToken=String(tj.access_token); let wabaId=String(req.body?.wabaId||'').trim(); let phoneNumberId=String(req.body?.phoneNumberId||'').trim(); const metaBusinessId=String(req.body?.businessId||'').trim();
-    if(wabaId && !phoneNumberId){
-      const pr=await fetch(`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(wabaId)}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating&access_token=${encodeURIComponent(accessToken)}`);
-      const pj:any=await pr.json(); if(pr.ok && Array.isArray(pj.data) && pj.data.length){ phoneNumberId=String(pj.data[0].id||''); }
-    }
-    if(!wabaId || !phoneNumberId) return res.status(400).json({error:'Meta login succeeded, but WABA/Phone Number selection was not returned. Confirm your Embedded Signup configuration allows WhatsApp account and phone selection.'});
-    const details=await WhatsAppService.testConnection(phoneNumberId,accessToken,cfg.apiVersion);
-    const enc=encryptedCredentialValues({accessToken,metaAppSecret:cfg.appSecret,webhookVerifyToken:randomBytes(24).toString('hex')});
-    const [existing]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,user.id)).limit(1);
-    const values:any={metaAppId:cfg.appId,businessAccountId:wabaId,phoneNumberId,metaBusinessId,apiVersion:cfg.apiVersion,...enc,connectionStatus:details.success?'CONNECTED':'CONNECTION_ERROR',status:details.success?'CONNECTED':'ERROR',displayPhoneNumber:details.phoneNumber||null,verifiedName:details.verifiedName||null,qualityRating:details.qualityRating||null,lastConnectionError:details.success?null:(details.error||'Meta verification failed.'),lastTestedAt:new Date(),updatedAt:new Date()};
-    if(existing) await db.update(whatsappAccounts).set(values).where(eq(whatsappAccounts.id,existing.id));
-    else await db.insert(whatsappAccounts).values({ownerUserId:user.id,businessPhone:details.phoneNumber||'',webhookVerifyToken:enc.webhookVerifyToken||'',accessToken:enc.accessToken||'',metaAppSecret:enc.metaAppSecret||'',...values});
-    // Subscribe the app to WABA webhooks where permitted. Failure here does not erase credentials.
-    try { await fetch(`https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(wabaId)}/subscribed_apps`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`}}); } catch {}
-    res.json({success:true,connectionStatus:details.success?'CONNECTED':'CONNECTION_ERROR',wabaId,phoneNumberId,displayPhoneNumber:details.phoneNumber,verifiedName:details.verifiedName,qualityRating:details.qualityRating});
+    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(req.body?.redirectUri||'')});
+    res.json(result);
   } catch(e:any){res.status(500).json({error:e.message||'Failed to complete Meta Embedded Signup.'});}
 });
 
@@ -1069,6 +1692,36 @@ app.post('/api/whatsapp/connection/test', requireAuth, async (req: AuthRequest, 
   } catch(e:any){res.status(500).json({error:e.message||'Connection test failed. Saved credentials were kept.'});}
 });
 app.delete('/api/whatsapp/connection', requireAuth, async (req:AuthRequest,res)=>{try{await db.delete(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,req.user!.id));res.json({success:true});}catch(e:any){res.status(500).json({error:e.message||'Failed to disconnect WhatsApp.'});}});
+
+app.get('/api/whatsapp/connection/readiness', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role === 'admin') return res.status(403).json({ error: 'Business account required.' });
+    const creds = await resolveWhatsAppCredentials(req.user!.id);
+    const [account] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, req.user!.id)).limit(1);
+    const approved = await db.select().from(messageTemplates).where(and(eq(messageTemplates.ownerUserId, req.user!.id), eq(messageTemplates.status, 'APPROVED')));
+    const connected = account?.connectionStatus === 'CONNECTED' && creds.isFullyConfigured;
+    return res.json({
+      connected,
+      automationReady: connected && approved.length > 0,
+      credentials: {
+        accessTokenStored: creds.hasToken,
+        phoneNumberIdStored: creds.hasPhoneId,
+        wabaIdStored: Boolean(creds.businessAccountId),
+        displayPhoneNumber: account?.displayPhoneNumber || account?.businessPhone || null,
+        verifiedName: account?.verifiedName || null,
+      },
+      approvedTemplateCount: approved.length,
+      nextAction: !connected
+        ? 'Connect and verify this business WhatsApp account with Meta.'
+        : approved.length === 0
+          ? 'Sync or create an approved WhatsApp template before running automations.'
+          : 'Automation is ready to send using this business WhatsApp account.',
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message || 'Failed to check WhatsApp automation readiness.' });
+  }
+});
+
 
 /* =========================================================================
    4. CONTACTS MANAGEMENT
@@ -1660,63 +2313,28 @@ app.get('/api/wishflow/history', requireAuth, (_req, res) => {
    ========================================================================= */
 
 // Webhook Verification (Meta calls this when you configure the webhook URL in Meta App Dashboard)
-app.get('/webhooks/whatsapp', async (req, res) => {
+async function verifyMetaWebhookRequest(req: express.Request, res: express.Response) {
   try {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    let tokenMatches = false;
-    if (isDatabaseConnected && typeof token === 'string') {
-      try {
-        const accounts = await db.select({ webhookVerifyToken: whatsappAccounts.webhookVerifyToken }).from(whatsappAccounts);
-        tokenMatches = accounts.some((a) => decryptSecret(a.webhookVerifyToken) === token);
-      } catch (err) {
-        console.warn('Notice checking webhook verification tokens:', err);
-      }
-    }
-
-    if (mode === 'subscribe' && tokenMatches) {
-      console.log('[Webhook] Verification successful for Meta WhatsApp Webhook');
+    const mode = String(req.query['hub.mode'] || '');
+    const token = String(req.query['hub.verify_token'] || '');
+    const challenge = String(req.query['hub.challenge'] || '');
+    const cfg = await metaPlatformConfig();
+    const expected = await ensurePlatformWebhookVerifyToken(cfg.webhookVerifyToken);
+    if (mode === 'subscribe' && token && token === expected) {
+      console.log('[Webhook] Platform verification successful');
+      res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
-    } else {
-      console.warn('[Webhook] Verification token mismatch');
-      return res.status(403).send('Verification failed');
     }
+    console.warn('[Webhook] Platform verification token mismatch');
+    return res.status(403).send('Verification failed');
   } catch (err) {
     console.error('[Webhook] Verification error:', err);
-    res.status(500).send('Internal Server Error');
+    return res.status(500).send('Internal Server Error');
   }
-});
+}
 
-app.get('/api/webhooks/whatsapp', async (req, res) => {
-  try {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    let tokenMatches = false;
-    if (isDatabaseConnected && typeof token === 'string') {
-      try {
-        const accounts = await db.select({ webhookVerifyToken: whatsappAccounts.webhookVerifyToken }).from(whatsappAccounts);
-        tokenMatches = accounts.some((a) => decryptSecret(a.webhookVerifyToken) === token);
-      } catch (err) {
-        console.warn('Notice checking webhook verification tokens:', err);
-      }
-    }
-
-    if (mode === 'subscribe' && tokenMatches) {
-      console.log('[Webhook] Verification successful for Meta WhatsApp Webhook');
-      return res.status(200).send(challenge);
-    } else {
-      console.warn('[Webhook] Verification token mismatch');
-      return res.status(403).send('Verification failed');
-    }
-  } catch (err) {
-    console.error('[Webhook] Verification error:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
+app.get('/webhooks/whatsapp', verifyMetaWebhookRequest);
+app.get('/api/webhooks/whatsapp', verifyMetaWebhookRequest);
 
 // Webhook Events (SENT, DELIVERED, READ, FAILED statuses)
 app.post('/webhooks/whatsapp', async (req, res) => {
