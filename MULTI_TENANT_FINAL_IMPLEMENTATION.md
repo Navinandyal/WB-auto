@@ -1,12 +1,12 @@
-# WishFlow — Final Multi-Tenant WhatsApp Architecture
+# GreetSync — Final Multi-Tenant WhatsApp Architecture
 
 ## What is implemented
 
-Each approved business owner is an isolated WishFlow tenant. In the current schema, the business tenant key is the `users.id` of the `BUSINESS_OWNER`; business-owned tables use `owner_user_id` as the tenant foreign key.
+Each approved business owner is an isolated GreetSync tenant. In the current schema, the business tenant key is the `users.id` of the `BUSINESS_OWNER`; business-owned tables use `owner_user_id` as the tenant foreign key.
 
 Each business has its own:
 
-- WishFlow login
+- GreetSync login
 - Meta/Facebook onboarding session
 - WhatsApp Business Account (WABA)
 - Phone Number ID and business WhatsApp number
@@ -28,7 +28,7 @@ Server-side ownership checks now cover contacts, groups, templates, bulk sends a
 
 `whatsapp_accounts.owner_user_id` is unique, so one active WhatsApp connection is stored per business in the current POC. Sensitive fields are encrypted server-side.
 
-Logout revokes only the WishFlow login session. It does not delete the business WhatsApp connection. When the same business logs in again, its saved connection is loaded from PostgreSQL.
+Logout revokes only the GreetSync login session. It does not delete the business WhatsApp connection. When the same business logs in again, its saved connection is loaded from PostgreSQL.
 
 ## Super Admin controls
 

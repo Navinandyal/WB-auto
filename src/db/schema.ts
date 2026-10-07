@@ -14,9 +14,15 @@ export const users = pgTable('users', {
   approvalStatus: text('approval_status').default('PENDING').notNull(), // PENDING, APPROVED, REJECTED
   businessName: text('business_name'),
   businessAddress: text('business_address'),
+  businessLogoData: text('business_logo_data'),
   approvedAt: timestamp('approved_at'),
   approvedById: integer('approved_by_id'),
   lastLoginAt: timestamp('last_login_at'),
+  deletionRequestedAt: timestamp('deletion_requested_at'),
+  purgeAfter: timestamp('purge_after'),
+  termsAcceptedAt: timestamp('terms_accepted_at'),
+  privacyAcceptedAt: timestamp('privacy_accepted_at'),
+  legalVersion: text('legal_version'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -58,6 +64,8 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
   displayPhoneNumber: text('display_phone_number'),
   verifiedName: text('verified_name'),
   qualityRating: text('quality_rating'),
+  onboardingMode: text('onboarding_mode').default('CLOUD_API').notNull(),
+  coexistenceSyncStatus: text('coexistence_sync_status').default('NOT_STARTED').notNull(),
   connectionStatus: text('connection_status').default('SAVED').notNull(), // SAVED, CONNECTED, CONNECTION_ERROR
   lastConnectionError: text('last_connection_error'),
   metaBusinessId: text('meta_business_id'),
@@ -78,6 +86,7 @@ export const contacts = pgTable('contacts', {
   birthdayAutomationEnabled: boolean('birthday_automation_enabled').default(true).notNull(),
   email: text('email'),
   notes: text('notes'),
+  avatarData: text('avatar_data'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -106,6 +115,7 @@ export const messageTemplates = pgTable('message_templates', {
   ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
   metaTemplateId: text('meta_template_id').unique(),
   name: text('name').notNull(),
+  displayName: text('display_name'),
   language: text('language').notNull(),
   category: text('category').notNull(), // MARKETING, UTILITY, AUTHENTICATION
   status: text('status').notNull(), // APPROVED, REJECTED, PENDING
@@ -122,6 +132,8 @@ export const automations = pgTable('automations', {
   ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
   templateId: integer('template_id').references(() => messageTemplates.id, { onDelete: 'cascade' }).notNull(),
+  templateSnapshot: jsonb('template_snapshot'),
+  sendRequestId: text('send_request_id').unique(),
   variables: jsonb('variables').$type<Record<string, string>>().notNull(), // { "1": "Rahul", "2": "Appointment #123" }
   scheduledAt: timestamp('scheduled_at').notNull(),
   timezone: text('timezone').default('UTC').notNull(),
@@ -166,6 +178,77 @@ export const automationExecutions = pgTable('automation_executions', {
   responsePayload: jsonb('response_payload'),
   errorMessage: text('error_message'),
   executedAt: timestamp('executed_at').defaultNow(),
+});
+
+// In-app notifications for administrators and individual business users.
+export const notifications = pgTable('notifications', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  targetRole: text('target_role').default('BUSINESS').notNull(), // ADMIN or BUSINESS
+  type: text('type').default('SYSTEM').notNull(),
+  title: text('title').notNull(),
+  message: text('message').notNull(),
+  entityType: text('entity_type'),
+  entityId: integer('entity_id'),
+  readAt: timestamp('read_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Admin-managed subscription packages. BASE packages unlock the application; MESSAGE_ADDON packages add message quota.
+export const subscriptionPackages = pgTable('subscription_packages', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  packageType: text('package_type').default('BASE').notNull(), // BASE, MESSAGE_ADDON
+  benefits: jsonb('benefits').$type<string[]>().default([]).notNull(),
+  messageLimit: integer('message_limit').default(0).notNull(),
+  contactLimit: integer('contact_limit').default(0).notNull(),
+  automationLimit: integer('automation_limit').default(0).notNull(),
+  pricePaise: integer('price_paise').default(0).notNull(),
+  durationMonths: integer('duration_months').default(1).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// One row represents either a requested or active purchase of an admin-defined package.
+export const userSubscriptions = pgTable('user_subscriptions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  packageId: integer('package_id').references(() => subscriptionPackages.id, { onDelete: 'restrict' }).notNull(),
+  status: text('status').default('PENDING').notNull(), // PENDING, ACTIVE, EXPIRED, CANCELLED, REJECTED
+  startsAt: timestamp('starts_at'),
+  endsAt: timestamp('ends_at'),
+  approvedById: integer('approved_by_id').references(() => users.id, { onDelete: 'set null' }),
+  pricePaiseSnapshot: integer('price_paise_snapshot').default(0).notNull(),
+  messageLimitSnapshot: integer('message_limit_snapshot').default(0).notNull(),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+
+
+// Admin-created reusable festival/campaign template suggestions.
+// Business users can copy a suggestion, edit it, and submit their own copy to Meta for approval.
+export const templateSuggestions = pgTable('template_suggestions', {
+  id: serial('id').primaryKey(),
+  createdById: integer('created_by_id').references(() => users.id, { onDelete: 'set null' }),
+  title: text('title').notNull(),
+  festival: text('festival'),
+  description: text('description'),
+  templateName: text('template_name').notNull(),
+  language: text('language').default('en_US').notNull(),
+  category: text('category').default('MARKETING').notNull(),
+  header: text('header'),
+  body: text('body').notNull(),
+  footer: text('footer'),
+  buttons: jsonb('buttons').$type<any[]>().default([]).notNull(),
+  activeFrom: timestamp('active_from'),
+  activeUntil: timestamp('active_until'),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // Audit Log

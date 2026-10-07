@@ -1,24 +1,316 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../models/models.dart';
 import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
+import '../widgets/data_image.dart';
 
-class GroupsScreen extends ConsumerWidget {
+class GroupsScreen extends ConsumerStatefulWidget {
   const GroupsScreen({super.key});
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final a=ref.watch(contactGroupsProvider);
-    return Scaffold(appBar:AppBar(title:const Text('Contact Groups')),floatingActionButton:FloatingActionButton.extended(onPressed:()=>_edit(context,ref),icon:const Icon(Icons.group_add),label:const Text('Create Group')),body:a.when(
-      loading:()=>const Center(child:CircularProgressIndicator()),error:(e,_)=>ErrorState(e),data:(groups)=>RefreshIndicator(onRefresh:()=>ref.refresh(contactGroupsProvider.future),child:ListView(padding:const EdgeInsets.all(18),children:[
-        const Text('Groups',style:TextStyle(fontSize:26,fontWeight:FontWeight.w900,color:BusinessColors.ink)),
-        const SizedBox(height:5),const Text('Organize contacts for birthday wishes, marketing campaigns and other bulk messages.',style:TextStyle(color:BusinessColors.muted)),const SizedBox(height:14),
-        if(groups.isEmpty)const Card(child:Padding(padding:EdgeInsets.all(28),child:Center(child:Text('No groups yet. Create your first contact group.'))))
-        else ...groups.map((g)=>Card(child:ListTile(leading:const CircleAvatar(child:Icon(Icons.groups)),title:Text(g.name,style:const TextStyle(fontWeight:FontWeight.w900)),subtitle:Text('${g.memberCount} contacts${g.description?.isNotEmpty==true?'\n${g.description}':''}'),isThreeLine:g.description?.isNotEmpty==true,onTap:()=>_details(context,ref,g),trailing:PopupMenuButton<String>(onSelected:(v){if(v=='edit')_edit(context,ref,g);if(v=='delete')_delete(context,ref,g);},itemBuilder:(_)=>const[PopupMenuItem(value:'edit',child:Text('Edit')),PopupMenuItem(value:'delete',child:Text('Delete'))]))))
-      ]))));
+  ConsumerState<GroupsScreen> createState() => _GroupsScreenState();
+
+  static Future<void> editGroup(
+    BuildContext context,
+    WidgetRef ref, [
+    ContactGroup? group,
+  ]) async {
+    final contacts = await ref.read(contactsProvider.future);
+    if (!context.mounted) return;
+
+    final name = TextEditingController(text: group?.name ?? '');
+    final description = TextEditingController(text: group?.description ?? '');
+    final selected = <int>{};
+    if (group != null) {
+      final data = await ref.read(apiClientProvider).get('/api/contact-groups/${group.id}');
+      if (data is Map) {
+        selected.addAll(
+          ((data['members'] as List?) ?? const [])
+              .whereType<Map>()
+              .map((row) => int.tryParse('${row['id']}') ?? 0)
+              .where((id) => id > 0),
+        );
+      }
+    }
+    if (!context.mounted) return;
+
+    var saving = false;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text(group == null ? 'Create Group' : 'Edit Group'),
+          content: SizedBox(
+            width: 430,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: name,
+                    maxLength: 80,
+                    decoration: const InputDecoration(labelText: 'Group Name *'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: description,
+                    maxLength: 240,
+                    minLines: 2,
+                    maxLines: 3,
+                    decoration: const InputDecoration(labelText: 'Description (optional)'),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text('Select Contacts', style: TextStyle(fontWeight: FontWeight.w900)),
+                      ),
+                      Text('${selected.length} selected', style: const TextStyle(color: BusinessColors.muted)),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  ...contacts.map(
+                    (contact) => CheckboxListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      value: selected.contains(contact.id),
+                      title: Text(contact.name),
+                      subtitle: Text(contact.phone),
+                      onChanged: saving
+                          ? null
+                          : (value) => setDialogState(() {
+                                if (value == true) {
+                                  selected.add(contact.id);
+                                } else {
+                                  selected.remove(contact.id);
+                                }
+                              }),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: saving ? null : () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final cleanName = name.text.trim();
+                      if (cleanName.length < 2) {
+                        showAppMessage(dialogContext, 'Enter a valid group name.', error: true);
+                        return;
+                      }
+                      setDialogState(() => saving = true);
+                      try {
+                        final payload = {
+                          'name': cleanName,
+                          'description': description.text.trim(),
+                          'contactIds': selected.toList(),
+                        };
+                        if (group == null) {
+                          await ref.read(apiClientProvider).post('/api/contact-groups', data: payload);
+                        } else {
+                          await ref.read(apiClientProvider).put('/api/contact-groups/${group.id}', data: payload);
+                        }
+                        ref.invalidate(contactGroupsProvider);
+                        ref.invalidate(contactsProvider);
+                        if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      } catch (error) {
+                        if (dialogContext.mounted) {
+                          setDialogState(() => saving = false);
+                          showAppMessage(dialogContext, '$error', error: true);
+                        }
+                      }
+                    },
+              child: saving
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    description.dispose();
   }
-  static Future<void> _details(BuildContext context, WidgetRef ref, ContactGroup g) async { final data=await ref.read(apiClientProvider).get('/api/contact-groups/${g.id}'); if(!context.mounted)return; final members=((data as Map)['members'] as List? ?? []).whereType<Map>().toList(); await showModalBottomSheet(context:context,isScrollControlled:true,builder:(_)=>DraggableScrollableSheet(expand:false,initialChildSize:.75,builder:(ctx,scroll)=>ListView(controller:scroll,padding:const EdgeInsets.all(18),children:[Text(g.name,style:const TextStyle(fontSize:24,fontWeight:FontWeight.w900)),Text('${members.length} contacts',style:const TextStyle(color:BusinessColors.muted)),const SizedBox(height:12),...members.map((m)=>ListTile(leading:const CircleAvatar(child:Icon(Icons.person)),title:Text('${m['name']}'),subtitle:Text('${m['phone']}')))]))); }
-  static Future<void> _edit(BuildContext context, WidgetRef ref,[ContactGroup? g]) async { final contacts=await ref.read(contactsProvider.future); if(!context.mounted)return; final name=TextEditingController(text:g?.name??''); final desc=TextEditingController(text:g?.description??''); final selected=<int>{}; if(g!=null){final d=await ref.read(apiClientProvider).get('/api/contact-groups/${g.id}'); selected.addAll((((d as Map)['members'] as List?)??[]).whereType<Map>().map((m)=>int.tryParse('${m['id']}')??0).where((x)=>x>0));} if(!context.mounted)return; await showDialog(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,set)=>AlertDialog(title:Text(g==null?'Create Group':'Edit Group'),content:SizedBox(width:420,child:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[TextField(controller:name,decoration:const InputDecoration(labelText:'Group Name *')),const SizedBox(height:10),TextField(controller:desc,decoration:const InputDecoration(labelText:'Description')),const SizedBox(height:12),const Align(alignment:Alignment.centerLeft,child:Text('Select Contacts',style:TextStyle(fontWeight:FontWeight.w900))),...contacts.map((c)=>CheckboxListTile(dense:true,value:selected.contains(c.id),title:Text(c.name),subtitle:Text(c.phone),onChanged:(v)=>set(()=>v==true?selected.add(c.id):selected.remove(c.id))))]))),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()async{if(name.text.trim().length<2){showAppMessage(ctx,'Enter a valid group name',error:true);return;}final payload={'name':name.text.trim(),'description':desc.text.trim(),'contactIds':selected.toList()};if(g==null)await ref.read(apiClientProvider).post('/api/contact-groups',data:payload);else await ref.read(apiClientProvider).put('/api/contact-groups/${g.id}',data:payload);ref.invalidate(contactGroupsProvider);if(ctx.mounted)Navigator.pop(ctx);},child:const Text('Save'))]))); }
-  static Future<void> _delete(BuildContext context,WidgetRef ref,ContactGroup g)async{final yes=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Delete group?'),content:Text('Delete ${g.name}? Contacts themselves will not be deleted.'),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Delete'))]));if(yes==true){await ref.read(apiClientProvider).delete('/api/contact-groups/${g.id}');ref.invalidate(contactGroupsProvider);}}
+}
+
+class _GroupsScreenState extends ConsumerState<GroupsScreen> {
+  final search = TextEditingController();
+  String query = '';
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = ref.watch(contactGroupsProvider);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Contact Groups')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => GroupsScreen.editGroup(context, ref),
+        icon: const Icon(Icons.group_add_rounded),
+        label: const Text('Create Group'),
+      ),
+      body: groups.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, _) => ErrorState(error, onRetry: () => ref.invalidate(contactGroupsProvider)),
+        data: (items) {
+          final q = query.trim().toLowerCase();
+          final filtered = items
+              .where((group) => q.isEmpty || group.name.toLowerCase().contains(q) || (group.description ?? '').toLowerCase().contains(q))
+              .toList();
+          return RefreshIndicator(
+            onRefresh: () async {
+              ref.invalidate(contactGroupsProvider);
+              await ref.read(contactGroupsProvider.future);
+            },
+            child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 100),
+              children: [
+                TextField(
+                  controller: search,
+                  onChanged: (value) => setState(() => query = value),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    hintText: 'Search groups by name',
+                    suffixIcon: query.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: () {
+                              search.clear();
+                              setState(() => query = '');
+                            },
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    const Expanded(child: Text('Groups', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+                    Text('${filtered.length}', style: const TextStyle(color: BusinessColors.muted, fontWeight: FontWeight.w800)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (filtered.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(28),
+                      child: Center(child: Text('No groups match your search.')),
+                    ),
+                  )
+                else
+                  ...filtered.map(
+                    (group) => Padding(
+                      padding: const EdgeInsets.only(bottom: 9),
+                      child: Card(
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          leading: const CircleAvatar(child: Icon(Icons.groups_rounded)),
+                          title: Text(group.name, style: const TextStyle(fontWeight: FontWeight.w900)),
+                          subtitle: Text(
+                            '${group.memberCount} contact${group.memberCount == 1 ? '' : 's'}'
+                            '${group.description?.isNotEmpty == true ? '\n${group.description}' : ''}',
+                          ),
+                          isThreeLine: group.description?.isNotEmpty == true,
+                          onTap: () => _details(group),
+                          trailing: PopupMenuButton<String>(
+                            color: Colors.white,
+                            surfaceTintColor: Colors.white,
+                            onSelected: (value) {
+                              if (value == 'edit') GroupsScreen.editGroup(context, ref, group);
+                              if (value == 'delete') _delete(group);
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'edit', child: Text('Edit group')),
+                              PopupMenuItem(value: 'delete', child: Text('Delete group')),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _details(ContactGroup group) async {
+    try {
+      final data = await ref.read(apiClientProvider).get('/api/contact-groups/${group.id}');
+      if (!mounted || data is! Map) return;
+      final members = ((data['members'] as List?) ?? const []).whereType<Map>().toList();
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: .75,
+          builder: (ctx, scroll) => ListView(
+            controller: scroll,
+            padding: const EdgeInsets.all(18),
+            children: [
+              Text(group.name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+              Text('${members.length} contacts', style: const TextStyle(color: BusinessColors.muted)),
+              const SizedBox(height: 12),
+              if (members.isEmpty)
+                const Padding(padding: EdgeInsets.all(20), child: Center(child: Text('No contacts in this group.')))
+              else
+                ...members.map(
+                  (member) => ListTile(
+                    leading: DataImageAvatar(
+                      data: member['avatarData']?.toString(),
+                      fallbackText: '${member['name'] ?? '?'}'.isEmpty ? '?' : '${member['name'] ?? '?'}'[0].toUpperCase(),
+                    ),
+                    title: Text('${member['name'] ?? ''}'),
+                    subtitle: Text('${member['phone'] ?? ''}'),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) showAppMessage(context, '$error', error: true);
+    }
+  }
+
+  Future<void> _delete(ContactGroup group) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete group?'),
+        content: Text('Delete ${group.name}? Contacts themselves will not be deleted.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    try {
+      await ref.read(apiClientProvider).delete('/api/contact-groups/${group.id}');
+      ref.invalidate(contactGroupsProvider);
+      ref.invalidate(contactsProvider);
+    } catch (error) {
+      if (mounted) showAppMessage(context, '$error', error: true);
+    }
+  }
 }

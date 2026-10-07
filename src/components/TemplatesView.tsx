@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
-  Sparkles,
   Layers,
   AlertCircle,
   FileText,
@@ -17,7 +16,6 @@ export const TemplatesView: React.FC = () => {
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const loadTemplates = async () => {
@@ -53,26 +51,10 @@ export const TemplatesView: React.FC = () => {
     } catch (err: any) {
       setNotification({
         type: 'error',
-        text: `${err.message}. If you do not have live templates on Meta yet, you can click "Load Approved Starter Templates" below.`,
+        text: err.message || 'Failed to sync templates from Meta.',
       });
     } finally {
       setSyncing(false);
-    }
-  };
-
-  const handleSeedStarterTemplates = async () => {
-    setSeeding(true);
-    setNotification(null);
-    try {
-      const res = await fetchWithAuth('/api/whatsapp/templates/seed-defaults', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setNotification({ type: 'success', text: 'Approved starter templates loaded successfully.' });
-      await loadTemplates();
-    } catch (err: any) {
-      setNotification({ type: 'error', text: err.message || 'Failed to load starter templates' });
-    } finally {
-      setSeeding(false);
     }
   };
 
@@ -93,15 +75,6 @@ export const TemplatesView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5">
-          <button
-            id="seed-templates-button"
-            onClick={handleSeedStarterTemplates}
-            disabled={seeding}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition cursor-pointer disabled:opacity-50"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>Load Starter Templates</span>
-          </button>
           <button
             id="sync-templates-button"
             onClick={handleSyncTemplates}
@@ -131,21 +104,8 @@ export const TemplatesView: React.FC = () => {
         </div>
       )}
 
-      {/* Meta WhatsApp Template Explainer Notice */}
-      <div className="rounded-2xl border border-sky-500/20 bg-sky-950/30 p-4 text-xs text-sky-200/90 flex items-start gap-3.5">
-        <div className="p-2 rounded-xl bg-sky-500/20 text-sky-300 shrink-0 mt-0.5">
-          <Sparkles className="w-4 h-4" />
-        </div>
-        <div className="space-y-1.5 leading-relaxed">
-          <div className="font-semibold text-white text-sm">Meta WhatsApp Template Rules & Auto-Fallback</div>
-          <p className="text-slate-300">
-            WhatsApp Business Cloud API requires outbound messages outside the 24-hour service window to use a registered template.
-            Meta provides <span className="font-mono text-emerald-300 font-semibold bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/60">hello_world</span> (en_US) as the universal pre-approved template that functions immediately without needing manual review.
-          </p>
-          <p className="text-slate-400 text-[11px]">
-            Custom template names (e.g. <code className="text-amber-300">happy_birthday_wishes</code>) produce Meta Error <strong>#132001 (Template does not exist in translation)</strong> if they are not yet created in your Meta account. Our background worker automatically falls back to <strong className="text-white">hello_world</strong> if a custom template is missing on Meta. To register custom templates with your exact wording, create them in <a href="https://business.facebook.com/wa/manage/message-templates/" target="_blank" rel="noreferrer" className="text-emerald-400 underline hover:text-emerald-300">Meta WhatsApp Manager</a> and click <strong>Sync Templates</strong>.
-          </p>
-        </div>
+      <div className="rounded-2xl border border-sky-500/20 bg-sky-950/30 p-4 text-xs text-slate-300 leading-relaxed">
+        Only templates returned by this business's connected Meta WhatsApp Business Account are shown as approved. Use <strong className="text-white">Sync Templates</strong> after creating or changing templates in GreetSync or Meta.
       </div>
 
       {/* Templates List */}
@@ -172,7 +132,7 @@ export const TemplatesView: React.FC = () => {
                         <FileText className="w-8 h-8 mx-auto text-slate-600" />
                         <p>No message templates found.</p>
                         <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                          Click <strong>Sync Templates</strong> to pull templates approved in Meta WhatsApp Business Manager, or click <strong>Load Starter Templates</strong> to seed standard templates.
+                          Click <strong>Sync Templates</strong> to pull templates that belong to this business in Meta WhatsApp Business Manager.
                         </p>
                       </div>
                     )}
@@ -181,7 +141,6 @@ export const TemplatesView: React.FC = () => {
               ) : (
                 templates.map((tpl) => {
                   const isApproved = tpl.status === 'APPROVED';
-                  const isDefaultHelloWorld = tpl.name === 'hello_world';
                   const bodyText = getBodyText(tpl.components);
 
                   return (
@@ -189,11 +148,7 @@ export const TemplatesView: React.FC = () => {
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono text-sm font-semibold text-white">{tpl.name}</span>
-                          {isDefaultHelloWorld ? (
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold tracking-wide">
-                              WhatsApp Built-in Pre-Approved
-                            </span>
-                          ) : isApproved ? (
+                          {isApproved ? (
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium tracking-wide">
                               Meta Approved
                             </span>

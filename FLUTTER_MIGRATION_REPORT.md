@@ -7,12 +7,12 @@
 - Mobile-number/password authentication through the existing Express/PostgreSQL backend.
 - Meta WhatsApp Cloud API integration remains server-side.
 - Background automation worker starts on backend startup.
-- WishFlow birthday scheduling/synchronization remains server-side.
+- GreetSync birthday scheduling/synchronization remains server-side.
 
 ## Web screen inventory
 1. Login
 2. Dashboard
-3. Birthday WishFlow
+3. Birthday GreetSync
 4. Scheduled Messages
 5. Create Automation
 6. Contacts

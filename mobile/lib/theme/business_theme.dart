@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/data_image.dart';
 
 class BusinessColors {
   // Semantic colors remain stable. Accent-aware UI should use Theme.of(context).colorScheme.primary.
@@ -97,8 +98,8 @@ ThemeData buildBusinessTheme({Color accent = BusinessColors.green}) {
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(0, 50),
-        foregroundColor: BusinessColors.ink,
-        side: const BorderSide(color: BusinessColors.line),
+        foregroundColor: accent,
+        side: BorderSide(color: accent.withOpacity(.55)),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
     ),
@@ -123,30 +124,75 @@ ThemeData buildBusinessTheme({Color accent = BusinessColors.green}) {
 }
 
 class BusinessHeader extends StatelessWidget {
-  const BusinessHeader({super.key, this.title, this.subtitle, this.trailing});
+  const BusinessHeader({
+    super.key,
+    this.title,
+    this.subtitle,
+    this.businessName,
+    this.businessLogoData,
+    this.trailing,
+  });
+
   final String? title;
   final String? subtitle;
+  final String? businessName;
+  final String? businessLogoData;
   final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.primary;
+    final bytes = decodeDataImage(businessLogoData);
+    final business = (businessName ?? '').trim();
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(color: accent, borderRadius: BorderRadius.circular(16)),
-          child: Icon(Icons.chat_bubble_rounded, color: Theme.of(context).colorScheme.onPrimary, size: 28),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Image.asset(
+            'assets/images/greetsync_logo.png',
+            width: 48,
+            height: 48,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.high,
+          ),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title ?? 'WishFlow Business', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
-            const SizedBox(height: 2),
-            Text(subtitle ?? 'Connect • Automate • Grow', style: const TextStyle(fontSize: 12, color: BusinessColors.muted)),
-          ]),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title ?? 'GreetSync',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  color: BusinessColors.ink,
+                ),
+              ),
+              const SizedBox(height: 3),
+              if (business.isNotEmpty)
+                Row(
+                  children: [
+                    if (bytes != null && bytes.isNotEmpty) ...[
+                      CircleAvatar(radius: 8, backgroundImage: MemoryImage(bytes)),
+                      const SizedBox(width: 5),
+                    ],
+                    Flexible(
+                      child: Text(
+                        subtitle ?? '$business • Connect • Automate • Grow',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, color: BusinessColors.muted),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Text(
+                  subtitle ?? 'Connect • Automate • Grow',
+                  style: const TextStyle(fontSize: 12, color: BusinessColors.muted),
+                ),
+            ],
+          ),
         ),
         if (trailing != null) trailing!,
       ],

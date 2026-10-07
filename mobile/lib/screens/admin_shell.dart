@@ -6,7 +6,11 @@ import 'admin_businesses_screen.dart';
 import 'admin_platform_lists.dart';
 import 'admin_messages_screen.dart';
 import 'admin_reports_screen.dart';
+import 'admin_packages_screen.dart';
+import 'admin_template_suggestions_screen.dart';
 import 'admin_settings_screen.dart';
+import 'admin_configuration_screen.dart';
+import 'notifications_screen.dart';
 
 class AdminShell extends ConsumerStatefulWidget {
   const AdminShell({super.key});
@@ -18,10 +22,11 @@ class _AdminShellState extends ConsumerState<AdminShell> {
   int index = 0;
   static const pages = <Widget>[
     AdminDashboardScreen(), AdminBusinessesScreen(), AdminContactsScreen(), AdminTemplatesScreen(),
-    AdminAutomationsScreen(), AdminMessagesScreen(), AdminReportsScreen(), AdminSettingsScreen(),
+    AdminTemplateSuggestionsScreen(), AdminAutomationsScreen(), AdminMessagesScreen(), AdminReportsScreen(),
+    AdminPackagesScreen(), AdminConfigurationScreen(), AdminSettingsScreen(),
   ];
-  static const titles = ['Dashboard','Businesses','Contacts','Templates','Automations','Messages','Reports','Settings'];
-  static const icons = [Icons.dashboard_outlined,Icons.business_outlined,Icons.people_alt_outlined,Icons.description_outlined,Icons.settings_suggest_outlined,Icons.chat_bubble_outline,Icons.analytics_outlined,Icons.settings_outlined];
+  static const titles = ['Dashboard','Businesses','Contacts','Templates','Template Suggestions','Automations','Messages','Reports','Packages','Configuration','Settings'];
+  static const icons = [Icons.dashboard_outlined,Icons.business_outlined,Icons.people_alt_outlined,Icons.description_outlined,Icons.auto_awesome_outlined,Icons.settings_suggest_outlined,Icons.chat_bubble_outline,Icons.analytics_outlined,Icons.workspace_premium_outlined,Icons.tune_rounded,Icons.settings_outlined];
 
   @override
   Widget build(BuildContext context) {
@@ -33,9 +38,9 @@ class _AdminShellState extends ConsumerState<AdminShell> {
         surfaceTintColor: Colors.white,
         title: Text(titles[index], style: const TextStyle(color: Color(0xFF071A63), fontWeight: FontWeight.w900)),
         actions: [
-          IconButton(onPressed: () {}, icon: const Badge(label: Text(''), child: Icon(Icons.notifications_none_rounded))),
+          Consumer(builder: (context, ref, _) { final unread=ref.watch(unreadNotificationsProvider); return IconButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen())), icon: unread > 0 ? Badge(label: Text(unread > 99 ? '99+' : '$unread'), child: const Icon(Icons.notifications_none_rounded)) : const Icon(Icons.notifications_none_rounded)); }),
           PopupMenuButton<String>(
-            onSelected: (v) { if (v == 'profile') setState(() => index = 7); if (v == 'logout') ref.read(authProvider.notifier).signOut(); },
+            onSelected: (v) { if (v == 'profile') setState(() => index = 10); if (v == 'logout') ref.read(authProvider.notifier).signOut(); },
             itemBuilder: (_) => [
               PopupMenuItem(enabled: false, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(user?.name ?? 'Admin', style: const TextStyle(fontWeight: FontWeight.w800)), const Text('Super Admin', style: TextStyle(fontSize: 12, color: Color(0xFF667695)))])),
               const PopupMenuDivider(),
@@ -49,7 +54,7 @@ class _AdminShellState extends ConsumerState<AdminShell> {
       drawer: Drawer(
         backgroundColor: const Color(0xFF0C2746),
         child: SafeArea(child: Column(children: [
-          const Padding(padding: EdgeInsets.fromLTRB(22, 22, 16, 20), child: Row(children: [CircleAvatar(backgroundColor: Color(0xFF0867FF), child: Icon(Icons.celebration, color: Colors.white)), SizedBox(width: 12), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('WishFlow', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20, color: Colors.white)), Text('Admin Panel', style: TextStyle(color: Color(0xFFB8C8DA)))])])),
+          Padding(padding: const EdgeInsets.fromLTRB(22, 22, 16, 20), child: Row(children: [ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.asset('assets/images/greetsync_logo.png', width: 44, height: 44, fit: BoxFit.cover)), const SizedBox(width: 12), const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('GreetSync', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20, color: Colors.white)), Text('Admin Panel', style: TextStyle(color: Color(0xFFB8C8DA)))])])),
           Expanded(child: ListView.builder(itemCount: titles.length, itemBuilder: (_,i) => Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
             child: ListTile(

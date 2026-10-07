@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem ============================================================
-rem WishFlow - One Click Android Development Runner
+rem GreetSync - One Click Android Development Runner
 rem Place this file in the PROJECT ROOT (same folder as package.json)
 rem and double-click it, or run it from CMD.
 rem ============================================================
@@ -15,7 +15,7 @@ set "API_BASE_URL=http://127.0.0.1:3000"
 
 echo.
 echo ============================================================
-echo   WishFlow Android Development Runner
+echo   GreetSync Android Development Runner
 echo ============================================================
 echo Project: %ROOT%
 echo.
@@ -25,7 +25,7 @@ if not exist "%ROOT%\package.json" (
   echo [ERROR] package.json was not found in:
   echo         %ROOT%
   echo.
-  echo Put this CMD file in the WishFlow project root folder.
+  echo Put this CMD file in the GreetSync project root folder.
   pause
   exit /b 1
 )
@@ -103,7 +103,7 @@ echo [2/6] Checking backend on port %BACKEND_PORT%...
 powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:%BACKEND_PORT%/api/health' -TimeoutSec 2; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }"
 if errorlevel 1 (
   echo Backend is not running. Starting it in a new window...
-  start "WishFlow Backend" cmd /k "cd /d "%ROOT%" ^&^& npm run dev"
+  start "GreetSync Backend" cmd /k "cd /d ""%ROOT%"" ^&^& set NODE_ENV=development ^&^& npm run dev"
 
   echo Waiting for backend to become ready...
   set "BACKEND_READY=0"
@@ -121,7 +121,7 @@ if errorlevel 1 (
   if "!BACKEND_READY!"=="0" (
     echo.
     echo [ERROR] Backend did not become ready within 30 seconds.
-    echo Check the "WishFlow Backend" window for the actual backend/database error.
+    echo Check the "GreetSync Backend" window for the actual backend/database error.
     pause
     exit /b 1
   )
@@ -145,7 +145,7 @@ if defined NGROK_EXE (
 
   if not defined META_TUNNEL_URL (
     echo Starting ngrok HTTPS tunnel for backend port %BACKEND_PORT%...
-    start "WishFlow Meta Tunnel" /min "%NGROK_EXE%" http %BACKEND_PORT%
+    start "GreetSync Meta Tunnel" /min "%NGROK_EXE%" http %BACKEND_PORT%
     for /L %%I in (1,1,20) do (
       if not defined META_TUNNEL_URL (
         timeout /t 1 /nobreak >nul
@@ -156,14 +156,14 @@ if defined NGROK_EXE (
 
   if defined META_TUNNEL_URL (
     echo [OK] Meta HTTPS tunnel: !META_TUNNEL_URL!
-    echo      WishFlow backend auto-detects this URL from ngrok.
+    echo      GreetSync backend auto-detects this URL from ngrok.
   ) else (
     echo [WARN] ngrok is installed but no HTTPS tunnel was detected.
     echo        Run: ngrok http %BACKEND_PORT%
   )
 ) else (
   echo [WARN] ngrok is not installed/in PATH.
-  echo        Normal WishFlow app development will still run.
+  echo        Normal GreetSync app development will still run.
   echo        Meta/Facebook Embedded Signup requires HTTPS.
   echo        Install ngrok once, authenticate it, then run this CMD again.
   echo        After installation, this runner starts and detects the tunnel automatically.
@@ -210,10 +210,27 @@ if errorlevel 1 (
 
 echo [OK] ADB reverse configured.
 
-rem ---------- Flutter dependencies ----------
+rem ---------- Flutter dependencies / stale Kotlin cache cleanup ----------
 echo.
 echo [5/6] Preparing Flutter application...
 pushd "%MOBILE%"
+
+rem Stop any Gradle daemon left by an interrupted build.
+if exist "android\gradlew.bat" call android\gradlew.bat --stop >nul 2>&1
+
+rem The Kotlin incremental-cache error in url_launcher/flutter_contacts/webview builds
+rem is caused by stale project build caches on Windows. Remove only project-local
+rem generated caches; the global Gradle/Pub download caches are preserved.
+if exist "build" rmdir /s /q "build"
+if exist "android\.gradle" rmdir /s /q "android\.gradle"
+call flutter clean
+if errorlevel 1 (
+  popd
+  echo [ERROR] flutter clean failed.
+  pause
+  exit /b 1
+)
+
 call flutter pub get
 if errorlevel 1 (
   popd
@@ -224,7 +241,7 @@ if errorlevel 1 (
 
 rem ---------- Run app ----------
 echo.
-echo [6/6] Starting WishFlow on %DEVICE_ID%...
+echo [6/6] Starting GreetSync on %DEVICE_ID%...
 echo API: %API_BASE_URL%
 echo.
 echo Keep this window open while Flutter is running.

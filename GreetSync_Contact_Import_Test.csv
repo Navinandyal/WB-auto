@@ -1,0 +1,9 @@
+﻿name,phone,country_code,email,date_of_birth,opt_in,notes
+Aarav Patil,9876501001,91,aarav@example.com,1995-01-15,true,Birthday automation test
+Ananya Kulkarni,9876501002,91,ananya@example.com,1998-04-21,true,Imported from test file
+Ishaan Deshmukh,9876501003,91,ishaan@example.com,1992-07-09,true,VIP customer
+Meera Nambiar,9876501004,91,meera@example.com,1996-11-30,true,
+Navin Joshi,9876501005,91,navin@example.com,1994-03-12,true,Variable preview test
+Riya Shah,9876501006,91,riya@example.com,2000-06-05,true,
+Sai Prasad,9876501007,91,sai@example.com,1990-09-18,true,Birthday automation test
+Zoya Khan,9876501008,91,zoya@example.com,1999-12-24,true,

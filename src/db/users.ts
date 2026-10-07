@@ -23,7 +23,7 @@ export async function getOrCreateUser(uid: string, email: string, name?: string)
 export const FIXED_ADMIN_MOBILE = '+919999999999';
 export const FIXED_ADMIN_PASSWORD = 'Admin@12345';
 export const FIXED_ADMIN_NAME = 'System Administrator';
-export const FIXED_ADMIN_EMAIL = 'admin@wishflow.local';
+export const FIXED_ADMIN_EMAIL = 'admin@greetsync.local';
 
 export async function ensureFixedAdminUser() {
   if (!isDatabaseConnected) return null;
@@ -43,6 +43,7 @@ export async function ensureFixedAdminUser() {
   if (byUid[0]) {
     const updated = await db.update(users).set({
       phone,
+      email,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',
@@ -56,6 +57,7 @@ export async function ensureFixedAdminUser() {
   if (byPhone[0]) {
     const updated = await db.update(users).set({
       uid,
+      email,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',

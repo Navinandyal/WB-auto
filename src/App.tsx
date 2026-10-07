@@ -95,7 +95,7 @@ const MainApp: React.FC = () => {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'birthdays', label: 'Birthday WishFlow', icon: Cake },
+    { id: 'birthdays', label: 'Birthday Automation', icon: Cake },
     { id: 'automations', label: 'Scheduled Messages', icon: Clock },
     { id: 'create', label: 'Create Automation', icon: PlusCircle },
     { id: 'contacts', label: 'Contacts', icon: Users },
@@ -114,7 +114,7 @@ const MainApp: React.FC = () => {
             </div>
             <div>
               <span className="font-semibold text-white tracking-tight text-sm sm:text-base">
-                WhatsApp Automation
+                GreetSync
               </span>
               <span className="hidden sm:inline-block ml-2 text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/40">
                 Official Meta Cloud API

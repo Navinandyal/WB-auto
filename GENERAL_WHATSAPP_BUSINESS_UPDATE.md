@@ -1,6 +1,6 @@
-# WishFlow General WhatsApp Business Update
+# GreetSync General WhatsApp Business Update
 
-This build expands WishFlow from a birthday-focused workflow into a general WhatsApp Business messaging and automation application.
+This build expands GreetSync from a birthday-focused workflow into a general WhatsApp Business messaging and automation application.
 
 ## Added
 

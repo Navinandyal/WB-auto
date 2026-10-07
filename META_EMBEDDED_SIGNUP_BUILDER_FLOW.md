@@ -1,10 +1,10 @@
-# WishFlow — Meta Embedded Signup Builder Flow
+# GreetSync — Meta Embedded Signup Builder Flow
 
-This build uses the Meta **Embedded Signup Builder Configuration ID** saved by the WishFlow Super Admin. It no longer constructs a generic Facebook OAuth URL for the normal business-owner connection flow.
+This build uses the Meta **Embedded Signup Builder Configuration ID** saved by the GreetSync Super Admin. It no longer constructs a generic Facebook OAuth URL for the normal business-owner connection flow.
 
 ## Provider configuration (one time)
 
-In WishFlow Admin > Meta Platform Setup, save:
+In GreetSync Admin > Meta Platform Setup, save:
 
 - Meta App ID
 - Meta App Secret
@@ -24,19 +24,19 @@ The HTTPS hostname detected/shown in Admin Settings must be allowed for the Face
 
 ## Business-owner flow
 
-1. Business owner logs into WishFlow.
+1. Business owner logs into GreetSync.
 2. Opens WhatsApp Business > Connect with Meta.
-3. WishFlow creates a 15-minute tenant-bound signup session.
-4. WishFlow opens an HTTPS page on the backend/ngrok origin.
+3. GreetSync creates a 15-minute tenant-bound signup session.
+4. GreetSync opens an HTTPS page on the backend/ngrok origin.
 5. That page loads Meta's JavaScript SDK.
 6. The user presses Continue with Meta.
 7. `FB.login()` launches the provider's Embedded Signup Builder using the saved `config_id`.
 8. The user authenticates with their own Meta account and selects/creates their own Business Portfolio, WABA, and WhatsApp phone number.
 9. Meta returns a short-lived authorization code to the page.
-10. The page posts that code to WishFlow's backend over the same HTTPS origin.
-11. WishFlow exchanges the code server-side using the provider App ID/App Secret.
-12. WishFlow resolves the connected WABA and Phone Number ID, verifies the number, subscribes the provider app to the WABA where permitted, encrypts the business access token, and stores everything against the logged-in business tenant.
-13. WishFlow immediately synchronizes real Meta templates.
+10. The page posts that code to GreetSync's backend over the same HTTPS origin.
+11. GreetSync exchanges the code server-side using the provider App ID/App Secret.
+12. GreetSync resolves the connected WABA and Phone Number ID, verifies the number, subscribes the provider app to the WABA where permitted, encrypts the business access token, and stores everything against the logged-in business tenant.
+13. GreetSync immediately synchronizes real Meta templates.
 14. The mobile app polls the tenant signup session and switches to Connected.
 
 ## Stored per business
@@ -68,7 +68,7 @@ Run the backend on port 3000 and expose it with HTTPS:
 ngrok http 3000
 ```
 
-WishFlow detects the ngrok HTTPS tunnel automatically. The Flutter API can still use `127.0.0.1:3000` through `adb reverse`; only Meta Embedded Signup needs the HTTPS origin.
+GreetSync detects the ngrok HTTPS tunnel automatically. The Flutter API can still use `127.0.0.1:3000` through `adb reverse`; only Meta Embedded Signup needs the HTTPS origin.
 
 If Brave blocks `connect.facebook.net`, the hosted signup page shows a warning. Turn Brave Shields off for the temporary ngrok page or open the page in Chrome.
 

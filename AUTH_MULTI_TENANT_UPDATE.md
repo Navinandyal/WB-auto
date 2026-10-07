@@ -1,4 +1,4 @@
-# WishFlow Authentication / Admin / Multi-Business Update
+# GreetSync Authentication / Admin / Multi-Business Update
 
 ## Authentication
 
@@ -12,7 +12,7 @@
 
 ## Admin experience
 
-Admin uses a separate blue/white WishFlow interface based on the supplied admin references. It is not the normal business-user dashboard.
+Admin uses a separate blue/white GreetSync interface based on the supplied admin references. It is not the normal business-user dashboard.
 
 Current admin mobile sections:
 - Dynamic Dashboard overview

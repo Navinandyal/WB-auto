@@ -1,10 +1,10 @@
-# WishFlow Auth UI + Validation Update
+# GreetSync Auth UI + Validation Update
 
 This build adapts the authentication UI/validation patterns from the supplied
 `WP_automation_auth_forgot_registration_final_fixed (7).zip` reference into the
-current WishFlow multi-tenant/admin-approval project.
+current GreetSync multi-tenant/admin-approval project.
 
-## Preserved WishFlow rules
+## Preserved GreetSync rules
 
 - Login uses mobile number + password only.
 - No Google/Firebase/OAuth login.
@@ -76,6 +76,6 @@ No manual migration is required for the local auto-initializing setup.
 
 ## Physical Android device
 
-The included `run-wishflow-android-dev.cmd` starts/validates the backend, detects
+The included `run-greetsync-android-dev.cmd` starts/validates the backend, detects
 the USB Android phone, configures `adb reverse tcp:3000 tcp:3000`, runs Flutter
 package resolution, and launches the application.

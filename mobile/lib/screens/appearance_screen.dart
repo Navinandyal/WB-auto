@@ -20,7 +20,7 @@ class AppearanceScreen extends ConsumerWidget {
           const Text('App appearance', style: TextStyle(fontSize: 23, fontWeight: FontWeight.w900, color: BusinessColors.ink)),
           const SizedBox(height: 5),
           const Text(
-            'WishFlow keeps its clean white/off-white layout. Choose an accent color below and buttons, selected navigation, switches and supported UI highlights update instantly.',
+            'GreetSync keeps its clean white/off-white layout. Choose an accent color below and buttons, selected navigation, switches and supported UI highlights update instantly.',
             style: TextStyle(color: BusinessColors.muted, height: 1.45),
           ),
           const SizedBox(height: 16),
@@ -96,7 +96,7 @@ class AppearanceScreen extends ConsumerWidget {
                 children: [
                   Icon(Icons.light_mode_outlined),
                   SizedBox(width: 12),
-                  Expanded(child: Text('WishFlow currently uses a light white/off-white base theme only. Accent changes are saved on this device and apply with one tap.', style: TextStyle(color: BusinessColors.muted, height: 1.4))),
+                  Expanded(child: Text('GreetSync currently uses a light white/off-white base theme only. Accent changes are saved on this device and apply with one tap.', style: TextStyle(color: BusinessColors.muted, height: 1.4))),
                 ],
               ),
             ),

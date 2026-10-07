@@ -203,7 +203,7 @@ export const ContactsView: React.FC = () => {
                           <span className="text-slate-200 font-medium">{c.dob}</span>
                           {c.birthdayAutomationEnabled !== false ? (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                              WishFlow ON
+                              GreetSync ON
                             </span>
                           ) : (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
@@ -316,7 +316,7 @@ export const ContactsView: React.FC = () => {
                 </p>
               </div>
 
-              {/* Date of Birth & Birthday WishFlow */}
+              {/* Date of Birth & Birthday Automation */}
               <div className="p-3.5 bg-slate-950/80 border border-slate-800/80 rounded-xl space-y-3">
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
@@ -333,7 +333,7 @@ export const ContactsView: React.FC = () => {
                     className="w-full px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500 transition"
                   />
                   <p className="text-[11px] text-slate-400">
-                    Enables Birthday WishFlow to automatically celebrate every year on WhatsApp.
+                    Enables Birthday Automation to automatically celebrate every year on WhatsApp.
                   </p>
                 </div>
 

@@ -1,4 +1,4 @@
-# WishFlow Update — Automation, Today Birthdays, Phone Contacts and Templates
+# GreetSync Update — Automation, Today Birthdays, Phone Contacts and Templates
 
 ## Business dashboard
 - Shows the number of birthdays today.
@@ -10,7 +10,7 @@
 - Added a Phone Contacts tab.
 - The app requests device contact permission when the Phone Contacts tab is opened.
 - Device contacts are displayed with name and phone number.
-- A device contact can be saved to WishFlow.
+- A device contact can be saved to GreetSync.
 - Imported device contacts are saved with WhatsApp consent disabled by default; the business owner must explicitly enable consent before automation/message sending.
 
 ## Templates

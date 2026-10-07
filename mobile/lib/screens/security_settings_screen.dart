@@ -105,7 +105,7 @@ class SecuritySettingsScreen extends ConsumerWidget {
                   SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      'How it works: after your device biometric check succeeds, WishFlow uses a device-specific server credential stored in secure storage to create a fresh app session. The credential can be revoked from this page and is separate from your Meta/WhatsApp credentials.',
+                      'How it works: after your device biometric check succeeds, GreetSync uses a device-specific server credential stored in secure storage to create a fresh app session. The credential can be revoked from this page and is separate from your Meta/WhatsApp credentials.',
                       style: TextStyle(color: BusinessColors.muted, height: 1.45),
                     ),
                   ),

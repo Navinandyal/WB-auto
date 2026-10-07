@@ -1,0 +1,11 @@
+.git/
+.github/
+node_modules/
+mobile/
+*.zip
+*.apk
+*.log
+.env
+.dart_tool/
+build/
+**/build/

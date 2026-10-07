@@ -21,4 +21,4 @@ cd ..
 flutter run -d 193012601220 --dart-define=API_BASE_URL=http://127.0.0.1:3000
 ```
 
-Or use `run-wishflow-android-dev.cmd`.
+Or use `run-greetsync-android-dev.cmd`.

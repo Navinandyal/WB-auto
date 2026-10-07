@@ -1,5 +1,8 @@
+import { prepareDeliveryTracking } from './delivery-setup.ts';
+import { acceptanceVariables } from './message-acceptance.ts';
+import { semanticComponents, previewSnapshot } from './template-rules.ts';
 import { and, eq, lte, isNull, or } from 'drizzle-orm';
-import { db, isDatabaseConnected } from '../db/index.ts';
+import { db, isDatabaseConnected, pool } from '../db/index.ts';
 import {
   automations,
   contacts,
@@ -12,6 +15,26 @@ import { localStore } from '../db/localStore.ts';
 import { WhatsAppService } from './whatsapp.ts';
 import { resolveWhatsAppCredentials } from './credentials.ts';
 import { WishflowService } from './wishflow.ts';
+import { createNotification } from './notifications.ts';
+import { assertMessageCapacity } from './subscriptions.ts';
+
+function renderTemplateMessageContent(template: typeof messageTemplates.$inferSelect, variables: Record<string, string> | null | undefined): string {
+  const vars = variables || {};
+  const custom = String((vars as any)._customMessage || '').trim();
+
+  const components = Array.isArray(template.components) ? template.components as any[] : [];
+  const body = String(components.find((component: any) => String(component?.type || '').toUpperCase() === 'BODY')?.text || '').trim();
+  if (!body) return custom || (template.name === 'hello_world' ? 'Hello World' : '');
+
+  let rendered = body;
+  for (const [key, value] of Object.entries(vars)) {
+    if (key.startsWith('_') || key.startsWith('header_')) continue;
+    const token = key.startsWith('body_') ? key.slice(5) : key;
+    const escapedKey = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rendered = rendered.replace(new RegExp(`\\{\\{\\s*${escapedKey}\\s*\\}\\}`, 'g'), String(value));
+  }
+  return rendered;
+}
 
 export interface WorkerRunResult {
   processed: number;
@@ -167,6 +190,8 @@ class AutomationWorker {
         .update(automations)
         .set({
           status: 'PROCESSING',
+          // Older and generated birthday jobs get a snapshot before execution.
+          templateSnapshot: automation.templateSnapshot ?? previewSnapshot(template),
           lockedAt: new Date(),
           updatedAt: new Date(),
         })
@@ -183,7 +208,7 @@ class AutomationWorker {
       }
 
       const res = await this.executeJob(automation, contact, template, undefined, allowSimulation);
-      if (res.status === 'SENT') {
+      if (['ACCEPTED','SENT'].includes(res.status)) {
         successCount++;
       } else {
         failureCount++;
@@ -201,7 +226,7 @@ class AutomationWorker {
       successCount,
       failureCount,
       details,
-      message: `Processed ${dueJobs.length} automation(s): ${successCount} sent, ${failureCount} failed.`,
+      message: `Processed ${dueJobs.length} automation(s): ${successCount} accepted for delivery, ${failureCount} failed.`,
     };
   }
 
@@ -256,7 +281,7 @@ class AutomationWorker {
 
       const account = localStore.account;
       const res = await this.executeJobLocal(job, contact, template, account, allowSimulation);
-      if (res.status === 'SENT') {
+      if (['ACCEPTED','SENT'].includes(res.status)) {
         successCount++;
       } else {
         failureCount++;
@@ -274,7 +299,7 @@ class AutomationWorker {
       successCount,
       failureCount,
       details,
-      message: `Processed ${dueJobs.length} local automation(s): ${successCount} sent, ${failureCount} failed.`,
+      message: `Processed ${dueJobs.length} local automation(s): ${successCount} accepted for delivery, ${failureCount} failed.`,
     };
   }
 
@@ -286,6 +311,12 @@ class AutomationWorker {
     allowSimulation: boolean = false
   ): Promise<{ status: string; errorMessage?: string }> {
     const now = new Date();
+    const owner=await pool.query('SELECT is_active,approval_status FROM users WHERE id=$1',[automation.ownerUserId]);
+    if(!owner.rows[0]?.is_active || !['ACTIVE','APPROVED'].includes(owner.rows[0]?.approval_status)) {
+      const errorMessage='Business account is inactive. Automation stopped.';
+      await db.update(automations).set({status:'CANCELLED',errorMessage,updatedAt:now}).where(eq(automations.id,automation.id));
+      return {status:'CANCELLED',errorMessage};
+    }
 
     // Validation 1: Verify contact opt-in
     if (!contact.optIn) {
@@ -303,7 +334,25 @@ class AutomationWorker {
       return { status: 'FAILED', errorMessage: errorMsg };
     }
 
-    // Validation 3: Check WhatsApp credentials
+    const snapshot=automation.templateSnapshot as any;
+    if(snapshot?.components && semanticComponents(snapshot.components)!==semanticComponents(template.components as any[])) {
+      const errorMsg='Template content changed after this message was scheduled. Review the current approved template and schedule a new message.';
+      await db.update(automations).set({status:'FAILED',errorMessage:errorMsg,executedAt:now,updatedAt:now}).where(eq(automations.id,automation.id));
+      return {status:'FAILED',errorMessage:errorMsg};
+    }
+
+    // Validation 3: Package and message quota are rechecked at execution time.
+    try {
+      await assertMessageCapacity(automation.ownerUserId, 1, { reserveScheduled: false });
+    } catch (quotaError: any) {
+      const errorMsg = quotaError?.message || 'Active package/message quota required.';
+      await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+      await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+      await createNotification({ userId: automation.ownerUserId, targetRole: 'BUSINESS', type: 'BILLING', title: 'Automation blocked by package limit', message: errorMsg, entityType: 'AUTOMATION', entityId: automation.id });
+      return { status: 'FAILED', errorMessage: errorMsg };
+    }
+
+    // Validation 4: Check WhatsApp credentials
     const creds = await resolveWhatsAppCredentials(automation.ownerUserId);
     const effectivePhoneId = creds.phoneNumberId;
     const effectiveToken = creds.accessToken;
@@ -322,12 +371,13 @@ class AutomationWorker {
           ownerUserId: automation.ownerUserId,
           direction: 'OUTBOUND',
           messageType: 'TEMPLATE',
+          content: renderTemplateMessageContent(template, automation.variables),
           templateName: template.name,
           templateLanguage: template.language,
           variables: automation.variables,
           whatsappMessageId: simulatedWamid,
           status: 'SIMULATED',
-          sentAt: now,
+          sentAt: null,
         });
         await db.insert(automationExecutions).values({
           automationId: automation.id,
@@ -348,6 +398,8 @@ class AutomationWorker {
       return { status: 'FAILED', errorMessage: errorMsg };
     }
 
+    // Repair delivery routing without blocking a valid messaging-only token.
+    const tracking=await prepareDeliveryTracking(creds);
     // Call live Meta WhatsApp API
     const sendResult = await WhatsAppService.sendTemplateMessage({
       phoneNumberId: effectivePhoneId!,
@@ -357,32 +409,58 @@ class AutomationWorker {
       templateName: template.name,
       templateLanguage: template.language,
       variables: automation.variables || {},
+      templateComponents: template.components as any[],
+      trackingId: `greetsync:${automation.ownerUserId}:${automation.id}`,
     });
+
+    if(sendResult.errorCode==='SEND_OUTCOME_UNKNOWN') {
+      const completedAt=new Date();
+      const vars={...(automation.variables||{}),__meta_message_status:'unknown',__delivery_note:sendResult.error!};
+      await db.transaction(async tx=>{
+        await tx.insert(messages).values({ownerUserId:automation.ownerUserId,automationId:automation.id,contactId:contact.id,direction:'OUTBOUND',messageType:'TEMPLATE',templateName:template.name,templateLanguage:template.language,variables:vars,status:'ACCEPTED',errorCode:sendResult.errorCode,errorMessage:sendResult.error,sentAt:null});
+        await tx.update(automations).set({status:'ACCEPTED',variables:vars,executedAt:completedAt,errorMessage:sendResult.error,updatedAt:completedAt}).where(eq(automations.id,automation.id));
+      });
+      return {status:'ACCEPTED',errorMessage:sendResult.error};
+    }
 
     if (sendResult.success && sendResult.whatsappMessageId) {
       const actualTemplateSent = sendResult.fellBackToHelloWorld ? 'hello_world' : template.name;
       const actualTemplateLang = sendResult.fellBackToHelloWorld ? 'en_US' : template.language;
       const successNote = sendResult.fallbackNote || null;
 
-      await db.update(automations).set({ status: 'SENT', executedAt: now, errorMessage: successNote, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(messages).values({
+      const completedAt=new Date();
+      const savedVars=acceptanceVariables((automation.variables||{}) as Record<string,string>,sendResult.rawResponse,tracking.warning);
+      await db.transaction(async tx=>{
+      await tx.update(automations).set({ status: 'ACCEPTED', variables: savedVars, executedAt: completedAt, errorMessage: successNote, updatedAt: completedAt }).where(eq(automations.id, automation.id));
+      await tx.insert(messages).values({
         automationId: automation.id,
         contactId: contact.id,
         ownerUserId: automation.ownerUserId,
         direction: 'OUTBOUND',
         messageType: 'TEMPLATE',
+        content: sendResult.fellBackToHelloWorld ? 'Hello World' : renderTemplateMessageContent(template, automation.variables),
         templateName: actualTemplateSent,
         templateLanguage: actualTemplateLang,
-        variables: automation.variables,
+        variables: savedVars,
         whatsappMessageId: sendResult.whatsappMessageId,
-        status: 'SENT',
-        sentAt: now,
+        status: 'ACCEPTED',
+        sentAt: null,
       });
-      await db.insert(automationExecutions).values({
+      await tx.insert(automationExecutions).values({
         automationId: automation.id,
         status: 'SUCCESS',
         responsePayload: sendResult.rawResponse,
-        executedAt: now,
+        executedAt: completedAt,
+      });
+      });
+      await createNotification({
+        userId: automation.ownerUserId,
+        targetRole: 'BUSINESS',
+        type: 'MESSAGE',
+        title: 'Message accepted by WhatsApp',
+        message: `${actualTemplateSent} is awaiting delivery to ${contact.name}.`,
+        entityType: 'AUTOMATION',
+        entityId: automation.id,
       });
 
       // If this was a birthday automation, record history & schedule next year automatically
@@ -393,13 +471,13 @@ class AutomationWorker {
           automationId: automation.id,
           contactId: contact.id,
           completedYear,
-          status: 'SENT',
+          status: 'ACCEPTED',
           templateName: actualTemplateSent,
           messageText: vars._customMessage,
         }).catch((err) => console.warn('[Worker] Birthday wish cycle completion hook failed:', err));
       }
 
-      return { status: 'SENT' };
+      return { status: 'ACCEPTED' };
     } else {
       const errorMsg = sendResult.error || 'Meta API error sending template message';
       await db.update(automations).set({ status: 'FAILED', executedAt: now, errorMessage: errorMsg, updatedAt: now }).where(eq(automations.id, automation.id));
@@ -409,6 +487,7 @@ class AutomationWorker {
         ownerUserId: automation.ownerUserId,
         direction: 'OUTBOUND',
         messageType: 'TEMPLATE',
+        content: renderTemplateMessageContent(template, automation.variables),
         templateName: template.name,
         templateLanguage: template.language,
         variables: automation.variables,
@@ -423,6 +502,23 @@ class AutomationWorker {
         errorMessage: errorMsg,
         responsePayload: sendResult.rawResponse,
         executedAt: now,
+      });
+      await createNotification({
+        userId: automation.ownerUserId,
+        targetRole: 'BUSINESS',
+        type: 'ERROR',
+        title: 'Message failed',
+        message: `GreetSync could not send ${template.name} to ${contact.name}: ${errorMsg}`,
+        entityType: 'AUTOMATION',
+        entityId: automation.id,
+      });
+      await createNotification({
+        targetRole: 'ADMIN',
+        type: 'ERROR',
+        title: 'Business automation failed',
+        message: `Automation #${automation.id} failed for business user ${automation.ownerUserId}: ${errorMsg}`,
+        entityType: 'AUTOMATION',
+        entityId: automation.id,
       });
       return { status: 'FAILED', errorMessage: errorMsg };
     }
@@ -477,12 +573,13 @@ class AutomationWorker {
           ownerUserId: job.ownerUserId || 0,
           direction: 'OUTBOUND',
           messageType: 'TEMPLATE',
+          content: renderTemplateMessageContent(template, job.variables),
           templateName: template.name,
           templateLanguage: template.language,
           variables: job.variables,
           whatsappMessageId: simulatedWamid,
           status: 'SIMULATED',
-          sentAt: now,
+          sentAt: null,
         });
 
         return { status: 'SIMULATED', errorMessage: simNote };
@@ -509,6 +606,7 @@ class AutomationWorker {
       templateName: template.name,
       templateLanguage: template.language,
       variables: job.variables || {},
+      templateComponents: Array.isArray(template.components) ? template.components : [],
     });
 
     if (sendResult.success && sendResult.whatsappMessageId) {
@@ -516,7 +614,7 @@ class AutomationWorker {
       const actualTemplateLang = sendResult.fellBackToHelloWorld ? 'en_US' : template.language;
       const successNote = sendResult.fallbackNote || null;
 
-      job.status = 'SENT';
+      job.status = 'ACCEPTED';
       job.executedAt = now;
       job.errorMessage = successNote;
       job.updatedAt = now;
@@ -527,12 +625,13 @@ class AutomationWorker {
         contactId: contact.id,
         direction: 'OUTBOUND',
         messageType: 'TEMPLATE',
+        content: sendResult.fellBackToHelloWorld ? 'Hello World' : renderTemplateMessageContent(template, job.variables),
         templateName: actualTemplateSent,
         templateLanguage: actualTemplateLang,
         variables: job.variables,
         whatsappMessageId: sendResult.whatsappMessageId,
-        status: 'SENT',
-        sentAt: now,
+        status: 'ACCEPTED',
+        sentAt: null,
       });
 
       // If this was a birthday automation, record history & schedule next year automatically
@@ -543,13 +642,13 @@ class AutomationWorker {
           automationId: job.id,
           contactId: contact.id,
           completedYear,
-          status: 'SENT',
+          status: 'ACCEPTED',
           templateName: actualTemplateSent,
           messageText: vars._customMessage,
         }).catch((err) => console.warn('[Worker] Local birthday wish cycle completion hook failed:', err));
       }
 
-      return { status: 'SENT' };
+      return { status: 'ACCEPTED' };
     } else {
       const errorMsg = sendResult.error || 'Failed sending template message via Meta API';
       job.status = 'FAILED';

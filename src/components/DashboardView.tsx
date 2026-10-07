@@ -181,7 +181,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Birthday WishFlow Spotlight Card */}
+      {/* Birthday Automation Spotlight Card */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/30 border border-slate-800 hover:border-amber-500/30 rounded-2xl p-5 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
@@ -189,7 +189,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-sm text-white">Birthday WishFlow Engine</h3>
+              <h3 className="font-semibold text-sm text-white">Birthday Automation Engine</h3>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                 Annual Auto-Pilot
               </span>
@@ -204,7 +204,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           onClick={() => onNavigate('birthdays')}
           className="px-4 py-2 bg-amber-500 hover:bg-amber-450 text-slate-950 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer shrink-0"
         >
-          <span>Open Birthday WishFlow</span>
+          <span>Open Birthday Automation</span>
           <ArrowUpRight className="w-3.5 h-3.5" />
         </button>
       </div>

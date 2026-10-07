@@ -47,7 +47,7 @@ export function verifyPassword(password: string, storedHash: string | null | und
   if (parts[0] === 'scrypt' && parts[1] === 'v1' && parts.length === 4) {
     salt = parts[2]; expectedHex = parts[3];
   } else if (parts.length === 2) {
-    // legacy compatibility for earlier WishFlow builds
+    // legacy compatibility for earlier GreetSync builds
     salt = parts[0]; expectedHex = parts[1];
   } else return false;
   try {

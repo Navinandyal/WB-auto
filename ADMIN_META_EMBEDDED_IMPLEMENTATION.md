@@ -1,4 +1,4 @@
-# WishFlow — Admin + In-App Meta Embedded Signup Update
+# GreetSync — Admin + In-App Meta Embedded Signup Update
 
 ## Admin side
 
@@ -44,17 +44,17 @@ Business Owner > WhatsApp Business > Meta Embedded Signup now opens a real in-ap
 
 Flow:
 
-1. Flutter requests a short-lived purpose-bound Embedded Signup session from WishFlow backend.
+1. Flutter requests a short-lived purpose-bound Embedded Signup session from GreetSync backend.
 2. Backend returns an in-app onboarding URL.
 3. Flutter loads the URL in WebView.
 4. The screen runs Meta/Facebook JavaScript SDK Embedded Signup using the configured `config_id`.
 5. The business authenticates directly on Meta's login UI.
 6. User selects/creates Business Portfolio + WABA + WhatsApp phone number and grants permissions.
 7. Meta returns an authorization code and WABA/Phone Number mapping.
-8. WishFlow backend exchanges the authorization code using the platform Meta App Secret.
+8. GreetSync backend exchanges the authorization code using the platform Meta App Secret.
 9. Backend stores the resulting business access token encrypted with AES-256-GCM.
-10. WABA ID, Phone Number ID, Meta Business ID and verified phone information are stored against the logged-in WishFlow business.
-11. WishFlow tests the phone connection using Meta Graph API.
+10. WABA ID, Phone Number ID, Meta Business ID and verified phone information are stored against the logged-in GreetSync business.
+11. GreetSync tests the phone connection using Meta Graph API.
 12. App attempts to subscribe the WABA to the platform app for webhooks.
 13. Flutter connection state becomes CONNECTED or CONNECTION_ERROR. Saved credentials are never deleted on verification error.
 
@@ -122,7 +122,7 @@ After extracting the project run:
 
 ```bat
 cd D:\Aikyam\project
-run-wishflow-android-dev.cmd
+run-greetsync-android-dev.cmd
 ```
 
 The runner executes `flutter pub get`, so the WebView package will be installed automatically.

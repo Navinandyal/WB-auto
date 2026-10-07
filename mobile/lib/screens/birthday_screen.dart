@@ -2,12 +2,264 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
 import '../widgets/common.dart';
-class BirthdayScreen extends ConsumerStatefulWidget { const BirthdayScreen({super.key}); @override ConsumerState<BirthdayScreen> createState()=>_BirthdayScreenState(); }
-class _BirthdayScreenState extends ConsumerState<BirthdayScreen>{ int tab=0; String search=''; @override Widget build(BuildContext context){ return Column(children:[Padding(padding:const EdgeInsets.fromLTRB(16,12,16,4),child:SegmentedButton<int>(segments:const [ButtonSegment(value:0,label:Text('Birthdays'),icon:Icon(Icons.cake)),ButtonSegment(value:1,label:Text('History'),icon:Icon(Icons.history)),ButtonSegment(value:2,label:Text('Settings'),icon:Icon(Icons.settings))],selected:{tab},onSelectionChanged:(s)=>setState(()=>tab=s.first))),Expanded(child:tab==0?_list():tab==1?_history():_settings())]); }
- Widget _list(){final a=ref.watch(birthdaysProvider);return RefreshIndicator(onRefresh:()=>ref.refresh(birthdaysProvider.future),child:a.when(loading:()=>ListView(children:[SizedBox(height:250),Center(child:CircularProgressIndicator())]),error:(e,_)=>ListView(children:[SizedBox(height:180),ErrorState(e)]),data:(list){final items=list.where((x)=>x.contactName.toLowerCase().contains(search.toLowerCase())).toList();return ListView(padding:const EdgeInsets.all(16),children:[Row(children:[Expanded(child:TextField(decoration:const InputDecoration(prefixIcon:Icon(Icons.search),hintText:'Search birthdays',border:OutlineInputBorder()),onChanged:(v)=>setState(()=>search=v))),IconButton(tooltip:'Sync',onPressed:_sync,icon:const Icon(Icons.sync))]),const SizedBox(height:12),if(items.isEmpty)const EmptyState('No contacts with birthdays found.')else...items.map((x)=>Card(child:ListTile(leading:CircleAvatar(child:Text('${x.daysUntilBirthday}')),title:Text(x.contactName),subtitle:Text('${x.dob} • turning ${x.ageTurning}\n${x.isToday?'Birthday today!':'${x.daysUntilBirthday} days remaining'}'),isThreeLine:true,trailing:Switch(value:x.birthdayAutomationEnabled,onChanged:(v)=>_toggle(x.contactId,v)),onTap:()=>_sendNow(x.contactId,x.contactName))))]);}));}
- Widget _history(){final a=ref.watch(wishHistoryProvider);return a.when(loading:()=>const Center(child:CircularProgressIndicator()),error:(e,_)=>ErrorState(e),data:(list)=>RefreshIndicator(onRefresh:()=>ref.refresh(wishHistoryProvider.future),child:ListView(padding:const EdgeInsets.all(16),children:[if(list.isEmpty)const EmptyState('No birthday wish history yet.')else...list.map((x)=>Card(child:ListTile(title:Text('${x['contactName']??'Contact'}'),subtitle:Text('${x['scheduledAt']??''}\n${x['messagePreview']??''}'),trailing:Text('${x['status']??''}'))))])));}
- Widget _settings(){final a=ref.watch(birthdaySettingsProvider);return a.when(loading:()=>const Center(child:CircularProgressIndicator()),error:(e,_)=>ErrorState(e),data:(s){final msg=TextEditingController(text:s.customMessage);final time=TextEditingController(text:s.defaultSendTime);return ListView(padding:const EdgeInsets.all(16),children:[SwitchListTile(title:const Text('Enable Birthday WishFlow'),value:s.enabled,onChanged:(v)=>setState(()=>s.enabled=v)),TextField(controller:time,decoration:const InputDecoration(labelText:'Default send time (HH:mm)')),const SizedBox(height:12),TextField(controller:msg,minLines:4,maxLines:8,decoration:const InputDecoration(labelText:'Default message',border:OutlineInputBorder())),const SizedBox(height:12),FilledButton(onPressed:()async{try{s.defaultSendTime=time.text.trim();s.customMessage=msg.text;await ref.read(apiClientProvider).post('/api/wishflow/settings',data:s.toJson());ref.invalidate(birthdaySettingsProvider);ref.invalidate(birthdaysProvider);if(mounted)showAppMessage(context,'WishFlow settings saved');}catch(e){if(mounted)showAppMessage(context,'$e',error:true);}},child:const Text('Save Settings'))]);});}
- Future<void> _sync()async{try{await ref.read(apiClientProvider).post('/api/wishflow/sync');ref.invalidate(birthdaysProvider);ref.invalidate(wishHistoryProvider);if(mounted)showAppMessage(context,'Birthdays synced');}catch(e){if(mounted)showAppMessage(context,'$e',error:true);}}
- Future<void> _toggle(int id,bool enabled)async{try{await ref.read(apiClientProvider).post('/api/wishflow/contacts/$id/toggle',data:{'enabled':enabled});ref.invalidate(birthdaysProvider);}catch(e){if(mounted)showAppMessage(context,'$e',error:true);}}
- Future<void> _sendNow(int id,String name)async{final c=TextEditingController();final ok=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:Text('Send birthday wish to $name?'),content:TextField(controller:c,maxLines:4,decoration:const InputDecoration(labelText:'Custom message (optional)',border:OutlineInputBorder())),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Send now'))]));if(ok!=true)return;try{await ref.read(apiClientProvider).post('/api/wishflow/contacts/$id/send-now',data:{'customMessage':c.text.trim().isEmpty?null:c.text.trim()});ref.invalidate(wishHistoryProvider);ref.invalidate(birthdaysProvider);if(mounted)showAppMessage(context,'Birthday wish sent');}catch(e){if(mounted)showAppMessage(context,'$e',error:true);}}
+import 'create_automation_screen.dart';
+
+class BirthdayScreen extends ConsumerStatefulWidget {
+  const BirthdayScreen({super.key});
+  @override
+  ConsumerState<BirthdayScreen> createState() => _BirthdayScreenState();
+}
+
+class _BirthdayScreenState extends ConsumerState<BirthdayScreen> {
+  int tab = 0;
+  String search = '';
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: SegmentedButton<int>(
+            segments: const [
+              ButtonSegment(
+                value: 0,
+                label: Text('Birthdays'),
+                icon: Icon(Icons.cake),
+              ),
+              ButtonSegment(
+                value: 1,
+                label: Text('History'),
+                icon: Icon(Icons.history),
+              ),
+              ButtonSegment(
+                value: 2,
+                label: Text('Settings'),
+                icon: Icon(Icons.settings),
+              ),
+            ],
+            selected: {tab},
+            onSelectionChanged: (s) => setState(() => tab = s.first),
+          ),
+        ),
+        Expanded(
+          child: tab == 0
+              ? _list()
+              : tab == 1
+              ? _history()
+              : _settings(),
+        ),
+      ],
+    );
+  }
+
+  Widget _list() {
+    final a = ref.watch(birthdaysProvider);
+    return RefreshIndicator(
+      onRefresh: () => ref.refresh(birthdaysProvider.future),
+      child: a.when(
+        loading: () => ListView(
+          children: [
+            SizedBox(height: 250),
+            Center(child: CircularProgressIndicator()),
+          ],
+        ),
+        error: (e, _) =>
+            ListView(children: [SizedBox(height: 180), ErrorState(e)]),
+        data: (list) {
+          final items = list
+              .where(
+                (x) =>
+                    x.contactName.toLowerCase().contains(search.toLowerCase()),
+              )
+              .toList();
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: 'Search birthdays',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (v) => setState(() => search = v),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Sync',
+                    onPressed: _sync,
+                    icon: const Icon(Icons.sync),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (items.isEmpty)
+                const EmptyState('No contacts with birthdays found.')
+              else
+                ...items.map(
+                  (x) => Card(
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        child: Text('${x.daysUntilBirthday}'),
+                      ),
+                      title: Text(x.contactName),
+                      subtitle: Text(
+                        '${x.dob} • turning ${x.ageTurning}\n${x.isToday ? 'Birthday today!' : '${x.daysUntilBirthday} days remaining'}',
+                      ),
+                      isThreeLine: true,
+                      trailing: Switch(
+                        value: x.birthdayAutomationEnabled,
+                        onChanged: (v) => _toggle(x.contactId, v),
+                      ),
+                      onTap: () => _sendNow(x.contactId, x.contactName),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _history() {
+    final a = ref.watch(wishHistoryProvider);
+    return a.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => ErrorState(e),
+      data: (list) => RefreshIndicator(
+        onRefresh: () => ref.refresh(wishHistoryProvider.future),
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (list.isEmpty)
+              const EmptyState('No birthday wish history yet.')
+            else
+              ...list.map(
+                (x) => Card(
+                  child: ListTile(
+                    title: Text('${x['contactName'] ?? 'Contact'}'),
+                    subtitle: Text(
+                      '${x['scheduledAt'] ?? ''}\n${x['messagePreview'] ?? ''}',
+                    ),
+                    trailing: Text('${x['status'] ?? ''}'),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _settings() {
+    final a = ref.watch(birthdaySettingsProvider);
+    return a.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => ErrorState(e),
+      data: (s) {
+        final msg = TextEditingController(text: s.customMessage);
+        final time = TextEditingController(text: s.defaultSendTime);
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            SwitchListTile(
+              title: const Text('Enable Birthday Automation'),
+              value: s.enabled,
+              onChanged: (v) => setState(() => s.enabled = v),
+            ),
+            TextField(
+              controller: time,
+              decoration: const InputDecoration(
+                labelText: 'Default send time (HH:mm)',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: msg,
+              minLines: 4,
+              maxLines: 8,
+              decoration: const InputDecoration(
+                labelText: 'Default message',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  s.defaultSendTime = time.text.trim();
+                  s.customMessage = msg.text;
+                  await ref
+                      .read(apiClientProvider)
+                      .post('/api/wishflow/settings', data: s.toJson());
+                  ref.invalidate(birthdaySettingsProvider);
+                  ref.invalidate(birthdaysProvider);
+                  if (mounted)
+                    showAppMessage(context, 'GreetSync settings saved');
+                } catch (e) {
+                  if (mounted) showAppMessage(context, '$e', error: true);
+                }
+              },
+              child: const Text('Save Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _sync() async {
+    try {
+      await ref.read(apiClientProvider).post('/api/wishflow/sync');
+      ref.invalidate(birthdaysProvider);
+      ref.invalidate(wishHistoryProvider);
+      if (mounted) showAppMessage(context, 'Birthdays synced');
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _toggle(int id, bool enabled) async {
+    try {
+      await ref
+          .read(apiClientProvider)
+          .post(
+            '/api/wishflow/contacts/$id/toggle',
+            data: {'enabled': enabled},
+          );
+      ref.invalidate(birthdaysProvider);
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _sendNow(int id, String name) async {
+    try {
+      final templates = await ref.read(templatesProvider.future);
+      final birthdays = templates.where(
+        (t) =>
+            t.status == 'APPROVED' &&
+            RegExp('birthday|brithday', caseSensitive: false).hasMatch(t.name),
+      );
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CreateAutomationScreen(
+            initialMode: 1,
+            preferredTemplateId: birthdays.isEmpty ? null : birthdays.first.id,
+            preselectedContactIds: [id],
+            initialSendNow: true,
+          ),
+        ),
+      );
+      ref.invalidate(wishHistoryProvider);
+      ref.invalidate(birthdaysProvider);
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    }
+  }
 }

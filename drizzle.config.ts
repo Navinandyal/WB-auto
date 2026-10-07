@@ -18,7 +18,7 @@ const database = process.env.SQL_DB_NAME || process.env.PGDATABASE || 'whatsapp_
 const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
 export default defineConfig({
-  schema: './src/server/db/schema.ts',
+  schema: './src/db/schema.ts',
   out: './drizzle',
   dialect: 'postgresql',
   schemaFilter: ['public'],

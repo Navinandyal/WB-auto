@@ -31,7 +31,9 @@ class _MetaEmbeddedSignupScreenState
   String? _sessionId;
   String? _redirectUri;
   Timer? _pollTimer;
-  static const MethodChannel _browserChannel = MethodChannel('wishflow/browser');
+  static const MethodChannel _browserChannel = MethodChannel(
+    'wishflow/browser',
+  );
 
   @override
   void initState() {
@@ -66,14 +68,21 @@ class _MetaEmbeddedSignupScreenState
       _redirectUri = null;
     });
     try {
-      final data = (await ref.read(apiClientProvider).post(
-        '/api/whatsapp/embedded-signup/session',
-        data: const {},
-      ) as Map).cast<String, dynamic>();
+      final data =
+          (await ref
+                      .read(apiClientProvider)
+                      .post(
+                        '/api/whatsapp/embedded-signup/session',
+                        data: const {},
+                      )
+                  as Map)
+              .cast<String, dynamic>();
       final url = '${data['url'] ?? ''}'.trim();
       final sessionId = '${data['sessionId'] ?? ''}'.trim();
       if (url.isEmpty || sessionId.isEmpty) {
-        throw ApiException('Backend did not return a complete Meta signup session.');
+        throw ApiException(
+          'Backend did not return a complete Meta signup session.',
+        );
       }
       if (!mounted) return;
       setState(() {
@@ -88,10 +97,10 @@ class _MetaEmbeddedSignupScreenState
         if (e is ApiException) {
           _errorCode = e.code;
           _error = e.code == 'META_PLATFORM_NOT_CONFIGURED'
-              ? 'WishFlow Meta Platform Setup is incomplete. Ask the Super Admin to save the Meta App ID, App Secret and Embedded Signup Configuration ID.'
+              ? 'GreetSync Meta Platform Setup is incomplete. Ask the Super Admin to save the Meta App ID, App Secret and Embedded Signup Configuration ID.'
               : e.code == 'META_TUNNEL_REQUIRED'
-                  ? 'Meta/Facebook login needs HTTPS. On the laptop run `ngrok http 3000`, then tap Check Again. WishFlow will use that HTTPS tunnel only for the Meta callback.'
-                  : e.message;
+              ? 'Meta/Facebook login needs HTTPS. On the laptop run `ngrok http 3000`, then tap Check Again. GreetSync will use that HTTPS tunnel only for the Meta callback.'
+              : e.message;
         } else {
           _error = '$e';
         }
@@ -124,7 +133,9 @@ class _MetaEmbeddedSignupScreenState
         );
       }
       if (!opened) {
-        throw ApiException('Could not open Meta Embedded Signup. Install or enable Google Chrome and try again.');
+        throw ApiException(
+          'Could not open Meta Embedded Signup. Install or enable Google Chrome and try again.',
+        );
       }
       if (!mounted) return;
       setState(() {
@@ -152,10 +163,12 @@ class _MetaEmbeddedSignupScreenState
     final sessionId = _sessionId;
     if (sessionId == null || sessionId.isEmpty) return;
     try {
-      final data = (await ref
-              .read(apiClientProvider)
-              .get('/api/whatsapp/embedded-signup/session/$sessionId') as Map)
-          .cast<String, dynamic>();
+      final data =
+          (await ref
+                      .read(apiClientProvider)
+                      .get('/api/whatsapp/embedded-signup/session/$sessionId')
+                  as Map)
+              .cast<String, dynamic>();
       final status = '${data['status'] ?? ''}'.toUpperCase();
       if (status == 'CONNECTED') {
         _pollTimer?.cancel();
@@ -177,7 +190,8 @@ class _MetaEmbeddedSignupScreenState
         if (!mounted) return;
         setState(() {
           _waitingForMeta = false;
-          _error = '${data['error'] ?? 'Meta connection could not be completed.'}';
+          _error =
+              '${data['error'] ?? 'Meta connection could not be completed.'}';
         });
       }
     } catch (_) {
@@ -208,7 +222,7 @@ class _MetaEmbeddedSignupScreenState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Connect your WhatsApp Business account',
+                      'WhatsApp Business app + GreetSync',
                       style: TextStyle(
                         fontSize: 23,
                         fontWeight: FontWeight.w900,
@@ -217,19 +231,52 @@ class _MetaEmbeddedSignupScreenState
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Sign in with your own Meta/Facebook account. WishFlow never asks for your Facebook password. After Meta approval, your WABA ID, Phone Number ID and business access token are captured by the backend and stored encrypted for your business only.',
-                      style: TextStyle(color: BusinessColors.muted, height: 1.45),
+                      'Sign in with your own Meta/Facebook account. GreetSync never asks for your Facebook password. After Meta approval, your WABA ID, Phone Number ID and business access token are captured by the backend and stored encrypted for your business only.',
+                      style: TextStyle(
+                        color: BusinessColors.muted,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Requires a supported WhatsApp Business app account, app version 2.24.17 or later and a Meta-approved Coexistence provider configuration. Meta checks eligibility. Keep the Business app installed and active. Synced contacts still need consent before automation.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: BusinessColors.muted,
+                        height: 1.4,
+                      ),
                     ),
                     const SizedBox(height: 22),
-                    _step(1, 'Sign in to Meta', 'WishFlow opens Meta Business Login directly in Google Chrome. No Facebook JavaScript SDK is required on the WishFlow page.'),
-                    _step(2, 'Choose Business Portfolio', 'Select the portfolio that owns your WhatsApp Business account.'),
-                    _step(3, 'Choose WABA & phone number', 'Select or create the WhatsApp Business Account and messaging number.'),
-                    _step(4, 'Grant WhatsApp permissions', "Meta applies the WhatsApp assets and permissions configured in your provider app's Login for Business / Embedded Signup configuration."),
-                    _step(5, 'WishFlow stores credentials', "WishFlow exchanges Meta's authorization code server-side, encrypts the business token, saves the WABA/Phone Number ID, subscribes webhooks and syncs approved templates."),
+                    _step(
+                      1,
+                      'Sign in to Meta',
+                      'GreetSync opens Meta’s secure Embedded Signup in your browser. Sign in using your business Meta account.',
+                    ),
+                    _step(
+                      2,
+                      'Choose Business Portfolio',
+                      'Select the portfolio that owns your WhatsApp Business account.',
+                    ),
+                    _step(
+                      3,
+                      'Choose WABA & phone number',
+                      'Choose your existing WhatsApp Business app number. Confirm the connection in the Business app; keep using it alongside GreetSync.',
+                    ),
+                    _step(
+                      4,
+                      'Grant WhatsApp permissions',
+                      "Meta applies the WhatsApp assets and permissions configured in your provider app's Login for Business / Embedded Signup configuration.",
+                    ),
+                    _step(
+                      5,
+                      'GreetSync stores credentials',
+                      "GreetSync exchanges Meta's authorization code server-side, encrypts the business token, saves the WABA/Phone Number ID, subscribes webhooks and syncs approved templates.",
+                    ),
                     const SizedBox(height: 18),
                     if (_loading)
                       const Center(child: CircularProgressIndicator())
-                    else if (_errorCode == 'META_PLATFORM_NOT_CONFIGURED' || _errorCode == 'META_TUNNEL_REQUIRED') ...[
+                    else if (_errorCode == 'META_PLATFORM_NOT_CONFIGURED' ||
+                        _errorCode == 'META_TUNNEL_REQUIRED') ...[
                       _errorCard(_error!),
                       const SizedBox(height: 12),
                       FilledButton.icon(
@@ -241,20 +288,35 @@ class _MetaEmbeddedSignupScreenState
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                          onPressed: (_launching || _waitingForMeta) ? null : _openMeta,
+                          onPressed: (_launching || _waitingForMeta)
+                              ? null
+                              : _openMeta,
                           icon: _launching
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
                                 )
                               : const Icon(Icons.login_rounded),
-                          label: Text(_waitingForMeta ? 'Waiting for Meta…' : 'Continue with Meta in Chrome'),
+                          label: Text(
+                            _waitingForMeta
+                                ? 'Waiting for Meta…'
+                                : 'Continue with Meta in Chrome',
+                          ),
                         ),
                       ),
                       if (_redirectUri != null && _redirectUri!.isNotEmpty) ...[
                         const SizedBox(height: 10),
-                        Text('Callback: $_redirectUri', style: const TextStyle(fontSize: 11, color: BusinessColors.muted)),
+                        Text(
+                          'Callback: $_redirectUri',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: BusinessColors.muted,
+                          ),
+                        ),
                       ],
                       if (_waitingForMeta) ...[
                         const SizedBox(height: 14),
@@ -267,11 +329,17 @@ class _MetaEmbeddedSignupScreenState
                           child: const Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
                               SizedBox(width: 12),
                               Expanded(
                                 child: Text(
-                                  'Complete the Meta steps in Chrome. WishFlow is securely waiting for Meta to return the authorization result.',
+                                  'Complete the Meta steps in Chrome. GreetSync is securely waiting for Meta to return the authorization result.',
                                   style: TextStyle(height: 1.4),
                                 ),
                               ),
@@ -315,15 +383,33 @@ class _MetaEmbeddedSignupScreenState
           CircleAvatar(
             radius: 20,
             backgroundColor: const Color(0xFFEAF8F0),
-            child: Text('$number', style: const TextStyle(color: BusinessColors.greenDark, fontWeight: FontWeight.w900)),
+            child: Text(
+              '$number',
+              style: const TextStyle(
+                color: BusinessColors.greenDark,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-                Text(subtitle, style: const TextStyle(color: BusinessColors.muted, height: 1.35)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    color: BusinessColors.muted,
+                    height: 1.35,
+                  ),
+                ),
               ],
             ),
           ),
@@ -336,8 +422,14 @@ class _MetaEmbeddedSignupScreenState
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: const Color(0xFFFFEEEE), borderRadius: BorderRadius.circular(14)),
-      child: Text(text, style: const TextStyle(color: Color(0xFFB42318), height: 1.4)),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFEEEE),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(color: Color(0xFFB42318), height: 1.4),
+      ),
     );
   }
 }

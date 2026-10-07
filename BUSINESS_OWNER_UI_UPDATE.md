@@ -1,6 +1,6 @@
-# WishFlow Business Owner Mobile UI Update
+# GreetSync Business Owner Mobile UI Update
 
-This build redesigns the Flutter business-owner experience using the supplied green WhatsApp-business mobile references while keeping all functional data connected to the existing WishFlow backend.
+This build redesigns the Flutter business-owner experience using the supplied green WhatsApp-business mobile references while keeping all functional data connected to the existing GreetSync backend.
 
 ## Business owner navigation
 
@@ -51,7 +51,7 @@ No dashboard counts, contacts, templates or scheduled messages were hardcoded. S
 
 The business portal now follows the supplied design language:
 
-- green WishFlow Business branding
+- green GreetSync Business branding
 - white cards and soft green surfaces
 - mobile-first bottom navigation
 - business header/avatar

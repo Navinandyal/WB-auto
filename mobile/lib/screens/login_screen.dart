@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
 import '../providers/providers.dart';
@@ -38,6 +39,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _confirmObscure = true;
   bool _rememberMe = true;
   bool _registering = false;
+  bool _acceptedLegal = false;
   bool _biometricReady = false;
   String? _registerMessage;
 
@@ -127,6 +129,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _submitRegistration() async {
     FocusScope.of(context).unfocus();
     if (!(_registerKey.currentState?.validate() ?? false)) return;
+    if (!_acceptedLegal) {
+      setState(() => _registerMessage = 'Please accept the Terms and Conditions and Privacy Policy to continue.');
+      return;
+    }
 
     setState(() {
       _registering = true;
@@ -142,6 +148,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         'email': _email.text.trim(),
         'mobile': normalizedMobile,
         'password': _registerPassword.text,
+        'termsAccepted': true,
+        'privacyAccepted': true,
       });
 
       if (!mounted) return;
@@ -272,7 +280,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'WishFlow',
+                      'GreetSync',
                       style: TextStyle(
                         fontSize: 31,
                         color: Colors.white,
@@ -356,7 +364,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             const Align(child: _BrandMark(size: 68)),
             const SizedBox(height: 16),
             const Text(
-              'WishFlow',
+              'GreetSync',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 31,
@@ -636,6 +644,46 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               },
               onFieldSubmitted: (_) => _registering ? null : _submitRegistration(),
             ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7F9FC),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE1E9F6)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Checkbox(
+                    value: _acceptedLegal,
+                    activeColor: blue,
+                    onChanged: _registering ? null : (value) => setState(() => _acceptedLegal = value ?? false),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          const Text('I agree to the ', style: TextStyle(fontSize: 13, color: Color(0xFF33466B))),
+                          InkWell(
+                            onTap: () => _openExternalLegal('https://www.aikyamaisystems.com/products/greetsync/terms-and-conditions'),
+                            child: const Text('Terms and Conditions', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0867FF), decoration: TextDecoration.underline)),
+                          ),
+                          const Text(' and ', style: TextStyle(fontSize: 13, color: Color(0xFF33466B))),
+                          InkWell(
+                            onTap: () => _openExternalLegal('https://www.aikyamaisystems.com/products/greetsync/privacy-policy'),
+                            child: const Text('Privacy Policy', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0867FF), decoration: TextDecoration.underline)),
+                          ),
+                          const Text('.', style: TextStyle(fontSize: 13, color: Color(0xFF33466B))),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             if (_registerMessage != null) ...[
               const SizedBox(height: 14),
               _messageBox(_registerMessage!, success: false),
@@ -798,6 +846,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return null;
   }
 
+  Future<void> _openExternalLegal(String url) async {
+    final uri = Uri.parse(url);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Unable to open the legal page.')));
+    }
+  }
+
   String? _passwordValidator(String? value) {
     final text = value ?? '';
     if (text.isEmpty) return 'Create a password';
@@ -820,19 +876,14 @@ class _BrandMark extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFF1B8BFF), Color(0xFF164DFF)],
-          ),
-          borderRadius: BorderRadius.circular(size * .25),
-        ),
-        child: Icon(
-          Icons.celebration_rounded,
-          color: Colors.white,
-          size: size * .55,
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(size * .23),
+        child: Image.asset(
+          'assets/images/greetsync_logo.png',
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.high,
         ),
       );
 }

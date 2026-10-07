@@ -15,6 +15,6 @@
 
 ## Important
 
-WishFlow cannot invent valid Meta credentials. The Super Admin must create/configure a real Meta app and Embedded Signup configuration in Meta Developer/Business tools, then enter those values in Admin Settings.
+GreetSync cannot invent valid Meta credentials. The Super Admin must create/configure a real Meta app and Embedded Signup configuration in Meta Developer/Business tools, then enter those values in Admin Settings.
 
 The stored platform App Secret is used only by the backend during the authorization-code exchange. It is not returned in full to Flutter after saving.

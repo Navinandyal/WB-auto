@@ -2,7 +2,7 @@
 
 ## Expected behavior
 
-Logout removes/revokes only the WishFlow authentication session:
+Logout removes/revokes only the GreetSync authentication session:
 - access JWT removed from the phone
 - refresh token revoked on the backend
 - refresh token removed from the phone

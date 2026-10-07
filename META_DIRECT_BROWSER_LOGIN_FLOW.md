@@ -1,29 +1,29 @@
-# WishFlow Meta Direct Browser Login Flow
+# GreetSync Meta Direct Browser Login Flow
 
 ## Why this build exists
 
 The previous Embedded Signup page waited for `https://connect.facebook.net/en_US/sdk.js` before enabling the Meta button. On some phones/networks this script never becomes available, leaving the page permanently on **Loading Meta...** even in Chrome.
 
-This build removes that dependency from the customer launch page. The customer taps **Continue with Facebook / Meta** and WishFlow performs a full-page redirect to Meta's own Facebook Login for Business authorization dialog using the configured Meta App ID and Login for Business / Embedded Signup Configuration ID.
+This build removes that dependency from the customer launch page. The customer taps **Continue with Facebook / Meta** and GreetSync performs a full-page redirect to Meta's own Facebook Login for Business authorization dialog using the configured Meta App ID and Login for Business / Embedded Signup Configuration ID.
 
 ## Flow
 
-1. The authenticated WishFlow business owner creates a one-time signup session.
-2. WishFlow opens the public HTTPS `/meta/embedded-signup/start` page.
+1. The authenticated GreetSync business owner creates a one-time signup session.
+2. GreetSync opens the public HTTPS `/meta/embedded-signup/start` page.
 3. The page immediately shows **Continue with Facebook / Meta**; it does not download the Facebook JavaScript SDK.
 4. Clicking the button redirects to Meta with:
-   - `client_id` = WishFlow provider App ID
+   - `client_id` = GreetSync provider App ID
    - `config_id` = provider Login for Business / Embedded Signup configuration ID
    - `response_type=code`
    - `override_default_response_type=true`
-   - exact HTTPS WishFlow callback URI
+   - exact HTTPS GreetSync callback URI
    - cryptographically random `state`
 5. The business owner authenticates on Meta and completes the WhatsApp business authorization allowed by the configuration.
 6. Meta redirects to `/meta/embedded-signup/callback` with a short-lived authorization code.
-7. WishFlow validates `state`, exchanges the code server-side with the provider App Secret, and never exposes the resulting token to Flutter/browser JavaScript.
-8. WishFlow discovers the granted WABA/phone using token granular scopes and Business/WABA Graph API edges.
-9. The business access token is encrypted and saved against that WishFlow business only.
-10. WishFlow tests the phone-number connection, subscribes the WABA to webhooks, syncs real templates, and marks the signup session `CONNECTED`.
+7. GreetSync validates `state`, exchanges the code server-side with the provider App Secret, and never exposes the resulting token to Flutter/browser JavaScript.
+8. GreetSync discovers the granted WABA/phone using token granular scopes and Business/WABA Graph API edges.
+9. The business access token is encrypted and saved against that GreetSync business only.
+10. GreetSync tests the phone-number connection, subscribes the WABA to webhooks, syncs real templates, and marks the signup session `CONNECTED`.
 11. The mobile app is already polling the signup session, refreshes the WhatsApp account state, and automation can use that business's stored credentials.
 
 ## Meta-side requirements

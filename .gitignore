@@ -1,8 +1,19 @@
+.env
+.env.*
+!.env.example
 node_modules/
-build/
 dist/
-coverage/
 .DS_Store
 *.log
-.env*
-!.env.example
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+.railway/
+GreetSync-production.apk
+PRODUCTION_DEPLOYMENT_INFO.txt
+
+# Firebase project configuration is supplied by the app owner.
+mobile/android/app/google-services.json

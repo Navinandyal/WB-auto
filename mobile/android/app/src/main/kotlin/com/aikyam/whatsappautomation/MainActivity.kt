@@ -1,6 +1,9 @@
 package com.aikyam.whatsappautomation
 
+import android.app.AlarmManager
 import android.app.KeyguardManager
+import android.app.PendingIntent
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,9 +20,11 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val browserChannel = "wishflow/browser"
     private val biometricChannel = "wishflow/biometric"
+    private val notificationChannel = "greetsync/notifications"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        NotificationHelper.ensureChannel(this)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, browserChannel)
             .setMethodCallHandler { call, result ->
@@ -53,17 +58,90 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "requestPermission" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9102)
+                        }
+                        result.success(true)
+                    }
+                    "show" -> {
+                        val id = call.argument<Number>("id")?.toInt() ?: 0
+                        val title = call.argument<String>("title").orEmpty()
+                        val body = call.argument<String>("body").orEmpty()
+                        NotificationHelper.show(this, id, title, body)
+                        result.success(true)
+                    }
+                    "schedule" -> {
+                        val id = call.argument<Number>("id")?.toInt() ?: 0
+                        val title = call.argument<String>("title").orEmpty()
+                        val body = call.argument<String>("body").orEmpty()
+                        val epochMillis = call.argument<Number>("epochMillis")?.toLong() ?: 0L
+                        scheduleLocalNotification(id, title, body, epochMillis)
+                        result.success(true)
+                    }
+                    "cancel" -> {
+                        val id = call.argument<Number>("id")?.toInt() ?: 0
+                        cancelLocalNotification(id)
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, biometricChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "isAvailable" -> result.success(isBiometricAvailable())
                     "authenticate" -> {
-                        val reason = call.argument<String>("reason")?.trim().orEmpty().ifEmpty { "Authenticate to continue to WishFlow" }
+                        val reason = call.argument<String>("reason")?.trim().orEmpty().ifEmpty { "Authenticate to continue to GreetSync" }
                         authenticateWithBiometrics(reason, result)
                     }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun scheduledNotificationPendingIntent(
+        id: Int,
+        title: String = "",
+        body: String = ""
+    ): PendingIntent {
+        val intent = Intent(this, ScheduledNotificationReceiver::class.java).apply {
+            putExtra("id", id)
+            putExtra("title", title)
+            putExtra("body", body)
+        }
+        return PendingIntent.getBroadcast(
+            this,
+            id,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun scheduleLocalNotification(id: Int, title: String, body: String, epochMillis: Long) {
+        if (epochMillis <= System.currentTimeMillis()) {
+            NotificationHelper.show(this, id, title, body)
+            return
+        }
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val pending = scheduledNotificationPendingIntent(id, title, body)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, epochMillis, pending)
+        } else {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, epochMillis, pending)
+        }
+    }
+
+    private fun cancelLocalNotification(id: Int) {
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        alarmManager.cancel(scheduledNotificationPendingIntent(id))
+        val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.cancel(id)
     }
 
     @Suppress("DEPRECATION")
@@ -104,7 +182,7 @@ class MainActivity : FlutterActivity() {
 
         try {
             val prompt = BiometricPrompt.Builder(this)
-                .setTitle("WishFlow")
+                .setTitle("GreetSync")
                 .setSubtitle(reason)
                 .setNegativeButton("Use password", executor) { _, _ -> complete(false) }
                 .build()

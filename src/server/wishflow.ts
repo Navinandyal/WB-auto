@@ -1,4 +1,5 @@
-import { eq, and, desc, isNull, or } from 'drizzle-orm';
+import { businessVariableValue } from './business-variables.ts';
+import { eq, and, desc, isNull, or, sql } from 'drizzle-orm';
 import { db, isDatabaseConnected } from '../db/index.ts';
 import {
   contacts,
@@ -6,10 +7,12 @@ import {
   messageTemplates,
   messages,
   whatsappAccounts,
+  users,
 } from '../db/schema.ts';
 import { localStore } from '../db/localStore.ts';
 import { WhatsAppService } from './whatsapp.ts';
 import { resolveWhatsAppCredentials } from './credentials.ts';
+import { assertAutomationCapacity, assertMessageCapacity } from './subscriptions.ts';
 import {
   BirthdaySettings,
   BirthdayWishContactSummary,
@@ -18,7 +21,7 @@ import {
 
 export class WishflowService {
   /**
-   * Retrieves the global Birthday WishFlow configuration
+   * Retrieves the global Birthday Automation configuration
    */
   static getSettings(): BirthdaySettings {
     return {
@@ -33,7 +36,7 @@ export class WishflowService {
   }
 
   /**
-   * Updates the global Birthday WishFlow configuration and optionally resyncs
+   * Updates the global Birthday Automation configuration and optionally resyncs
    */
   static async updateSettings(
     newSettings: Partial<BirthdaySettings>
@@ -56,7 +59,7 @@ export class WishflowService {
 
     // Trigger background sync across contacts
     await this.syncAllContactsBirthdays().catch((err) => {
-      console.warn('[Wishflow] Background sync error after settings update:', err);
+      console.warn('[GreetSync] Background sync error after settings update:', err);
     });
 
     return this.getSettings();
@@ -201,7 +204,7 @@ export class WishflowService {
           message: `Birthday wish already scheduled for ${targetYear}`,
         };
       }
-      if (existing.status === 'SENT' || existing.status === 'DELIVERED' || existing.status === 'SIMULATED') {
+      if (existing.status === 'ACCEPTED' || existing.status === 'READ' || existing.status === 'SENT' || existing.status === 'DELIVERED' || existing.status === 'SIMULATED') {
         return {
           scheduled: false,
           automationId: existing.id,
@@ -216,7 +219,6 @@ export class WishflowService {
       .replace(/{{age}}/g, String(bday.ageTurning));
 
     const templateVariables: Record<string, string> = {
-      '1': contact.name,
       _isBirthday: 'true',
       _birthdayYear: String(targetYear),
       _contactName: contact.name,
@@ -226,24 +228,80 @@ export class WishflowService {
     // 6. Resolve the approved Birthday template dynamically. Older builds used
     // a hard-coded template id, which could point at a removed demo template.
     let effectiveTemplateId = 0;
+    let effectiveTemplateComponents: any[] = [];
     if (isDatabaseConnected) {
       const candidates = await db
-        .select({ id: messageTemplates.id, ownerUserId: messageTemplates.ownerUserId })
+        .select({ id: messageTemplates.id, ownerUserId: messageTemplates.ownerUserId, components: messageTemplates.components })
         .from(messageTemplates)
         .where(and(
           eq(messageTemplates.status, 'APPROVED'),
           or(
             eq(messageTemplates.name, 'birthday'),
             eq(messageTemplates.name, 'happy_birthday_wishes'),
+            sql`${messageTemplates.name} ILIKE ${'%birthday%'}`,
           ),
           eq(messageTemplates.ownerUserId, contact.ownerUserId),
         ));
       const chosen = candidates.find((t) => t.ownerUserId === contact.ownerUserId);
       effectiveTemplateId = chosen?.id || 0;
+      effectiveTemplateComponents = Array.isArray(chosen?.components) ? chosen!.components as any[] : [];
     }
 
     if (!effectiveTemplateId) {
       return { scheduled: false, message: 'No approved Birthday template is available' };
+    }
+
+    const business = isDatabaseConnected
+      ? (await db.select().from(users).where(eq(users.id,contact.ownerUserId)).limit(1))[0]
+      : null;
+    // Fill birthday-template variables automatically from the contact. Meta
+    // review examples are never used as customer data.
+    for (const component of effectiveTemplateComponents) {
+      const section = String(component?.type || '').toUpperCase();
+      if (section !== 'HEADER' && section !== 'BODY') continue;
+      const text = String(component?.text || '');
+      const meanings = component?.greetsync_variable_meanings && typeof component.greetsync_variable_meanings === 'object'
+        ? component.greetsync_variable_meanings as Record<string, unknown>
+        : {};
+      const seen = new Set<string>();
+      for (const match of text.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
+        const token = String(match[1] || '').trim();
+        if (!token || seen.has(token)) continue;
+        seen.add(token);
+        const lowerToken = token.toLowerCase();
+        let meaning = String(meanings[token] || '').toUpperCase();
+        if (!meaning) {
+          if (lowerToken.includes('name') || token === '1') meaning = 'CONTACT_NAME';
+          else if (lowerToken.includes('age') || token === '2') meaning = 'AGE';
+          else if (lowerToken.includes('phone') || lowerToken.includes('mobile')) meaning = 'PHONE';
+          else if (lowerToken.includes('email')) meaning = 'EMAIL';
+          else if (lowerToken.includes('birth') || lowerToken === 'dob') meaning = 'BIRTHDAY_DATE';
+        }
+        let value = businessVariableValue(meaning,business) || '';
+        if (meaning === 'CONTACT_NAME') value = String(contact.name || '').trim();
+        else if (meaning === 'FIRST_NAME') value = String(contact.name || '').trim().split(/\s+/)[0] || '';
+        else if (meaning === 'AGE') value = String(bday.ageTurning);
+        else if (meaning === 'PHONE') value = String(contact.phone || '').trim();
+        else if (meaning === 'EMAIL') value = String(contact.email || '').trim();
+        else if (meaning === 'BIRTHDAY_DATE') value = String(contact.dob || '').split('-').reverse().join('-');
+        else if (meaning === 'SCHEDULED_DATE') value = `${String(targetDate.getDate()).padStart(2,'0')}-${String(targetDate.getMonth()+1).padStart(2,'0')}-${targetDate.getFullYear()}`;
+        else if (meaning === 'SCHEDULED_TIME') value = `${String(targetDate.getHours()).padStart(2,'0')}:${String(targetDate.getMinutes()).padStart(2,'0')}`;
+        else if (meaning === 'SCHEDULED_DATE_TIME') value = `${String(targetDate.getDate()).padStart(2,'0')}-${String(targetDate.getMonth()+1).padStart(2,'0')}-${targetDate.getFullYear()} ${String(targetDate.getHours()).padStart(2,'0')}:${String(targetDate.getMinutes()).padStart(2,'0')}`;
+        if (!value) return { scheduled: false, message: `Birthday template variable {{${token}}} requires ${meaning || 'custom'} information that cannot be filled automatically.` };
+        const key = section === 'HEADER' ? `header_${token}` : token;
+        templateVariables[key] = value;
+      }
+    }
+
+    // Birthday jobs consume the same package automation/message quota as manually
+    // scheduled jobs. This prevents automatic birthday sync from bypassing plan limits.
+    if (isDatabaseConnected && contact.ownerUserId) {
+      try {
+        await assertAutomationCapacity(contact.ownerUserId, 1);
+        await assertMessageCapacity(contact.ownerUserId, 1, { reserveScheduled: true, scheduledAt: targetDate });
+      } catch (quotaError: any) {
+        return { scheduled: false, message: quotaError?.message || 'Package quota does not allow another birthday automation.' };
+      }
     }
 
     if (isDatabaseConnected) {
@@ -262,10 +320,10 @@ export class WishflowService {
           .returning();
 
         const newId = inserted[0]?.id;
-        console.log(`[Wishflow] Scheduled birthday wish for ${contact.name} on ${targetDate.toISOString()} (Year: ${targetYear}, ID: ${newId})`);
+        console.log(`[GreetSync] Scheduled birthday wish for ${contact.name} on ${targetDate.toISOString()} (Year: ${targetYear}, ID: ${newId})`);
         return { scheduled: true, automationId: newId, message: 'Scheduled successfully' };
       } catch (err: any) {
-        console.warn('[Wishflow] Failed to insert into PostgreSQL, inserting into localStore:', err.message);
+        console.warn('[GreetSync] Failed to insert into PostgreSQL, inserting into localStore:', err.message);
       }
     }
 
@@ -283,7 +341,7 @@ export class WishflowService {
       updatedAt: new Date(),
     });
 
-    console.log(`[Wishflow] Scheduled local birthday wish for ${contact.name} on ${targetDate.toISOString()} (Year: ${targetYear}, ID: ${newId})`);
+    console.log(`[GreetSync] Scheduled local birthday wish for ${contact.name} on ${targetDate.toISOString()} (Year: ${targetYear}, ID: ${newId})`);
     return { scheduled: true, automationId: newId, message: 'Scheduled locally' };
   }
 
@@ -394,14 +452,14 @@ export class WishflowService {
       scheduledAt: new Date().toISOString(),
       executedAt: new Date().toISOString(),
       status,
-      templateName: templateName || 'hello_world',
+      templateName: templateName || 'Birthday',
       messagePreview: messageText || 'Happy Birthday!',
       errorMessage,
     };
 
     localStore.birthdayWishHistory.unshift(historyItem);
 
-    console.log(`[Wishflow] Recorded wish history for ${contactName} (${completedYear}): ${status}`);
+    console.log(`[GreetSync] Recorded wish history for ${contactName} (${completedYear}): ${status}`);
 
     // 3. Automatically schedule the next year's birthday wish to keep the cycle active!
     const nextYear = completedYear + 1;
@@ -414,9 +472,9 @@ export class WishflowService {
           const bday = this.calculateNextBirthday(contact.dob, settings.defaultSendTime);
           // If the computed target year is now nextYear, schedule it
           await this.syncContactBirthdayAutomation(contact.id);
-          console.log(`[Wishflow] Next year (${nextYear}) birthday wish scheduled for ${contact.name}`);
+          console.log(`[GreetSync] Next year (${nextYear}) birthday wish scheduled for ${contact.name}`);
         } catch (err: any) {
-          console.warn('[Wishflow] Failed to schedule next year birthday:', err?.message);
+          console.warn('[GreetSync] Failed to schedule next year birthday:', err?.message);
         }
       }, 1000);
     }
@@ -490,7 +548,7 @@ export class WishflowService {
           vars &&
           vars._isBirthday === 'true' &&
           vars._birthdayYear === currentYearStr &&
-          (a.status === 'SENT' || a.status === 'DELIVERED' || a.status === 'SIMULATED')
+          (a.status === 'ACCEPTED' || a.status === 'READ' || a.status === 'SENT' || a.status === 'DELIVERED' || a.status === 'SIMULATED')
         );
       });
 
@@ -502,7 +560,7 @@ export class WishflowService {
       }
 
       const templateId = matchedAutomation?.templateId || settings.defaultTemplateId || 1;
-      const templateName = templateMap.get(templateId) || 'hello_world';
+      const templateName = templateMap.get(templateId) || 'Birthday';
       const customMsg = matchedAutomation?.variables?._customMessage || settings.customMessage;
 
       results.push({
@@ -570,78 +628,69 @@ export class WishflowService {
   static async sendBirthdayWishNow(
     contactId: number,
     customMessage?: string
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  ): Promise<{ success: boolean; messageId?: string; status?: string; error?: string }> {
     let contact: any = null;
     if (isDatabaseConnected) {
-      try {
-        const rows = await db.select().from(contacts).where(eq(contacts.id, contactId)).limit(1);
-        contact = rows[0];
-      } catch {}
+      try { contact = (await db.select().from(contacts).where(eq(contacts.id, contactId)).limit(1))[0]; } catch {}
     }
-    if (!contact) {
-      contact = localStore.contacts.find((c) => c.id === contactId);
-    }
+    if (!contact) contact = localStore.contacts.find((c) => c.id === contactId);
+    if (!contact) return { success: false, error: 'Contact not found' };
 
-    if (!contact) {
-      return { success: false, error: 'Contact not found' };
+    // Enforce the business owner's active package and real-time message quota
+    // before an immediate birthday wish reaches the WhatsApp Cloud API.
+    // This closes the send-now path so it cannot bypass billing limits.
+    if (isDatabaseConnected && contact.ownerUserId) {
+      await assertMessageCapacity(Number(contact.ownerUserId), 1, { reserveScheduled: false });
     }
 
     const creds = await resolveWhatsAppCredentials(contact.ownerUserId || 0);
     if (!creds.isFullyConfigured || !creds.phoneNumberId || !creds.accessToken) {
-      return {
-        success: false,
-        error: 'WhatsApp API credentials are not configured. Go to WhatsApp Settings to configure your Phone Number ID and Access Token.',
-      };
+      return { success: false, error: 'WhatsApp API credentials are not configured. Connect this business WhatsApp account first.' };
+    }
+
+    // Birthday sends must use the business owner's real APPROVED Birthday template.
+    // Never silently substitute hello_world: that changes the message the user selected.
+    let birthdayTemplate:any = null;
+    if (isDatabaseConnected) {
+      try {
+        const approved = await db.select().from(messageTemplates).where(and(eq(messageTemplates.ownerUserId, contact.ownerUserId), eq(messageTemplates.status, 'APPROVED')));
+        birthdayTemplate = approved.find((t:any) => String(t.name || '').toLowerCase().includes('birthday')) || null;
+      } catch {}
+    }
+    if (!birthdayTemplate) {
+      return { success: false, error: 'No approved Birthday template is available for this WhatsApp Business account. Sync templates from Meta and approve the Birthday template first.' };
     }
 
     const settings = this.getSettings();
-    const textToSend =
-      customMessage ||
-      settings.customMessage.replace(/{{name}}/g, contact.name).replace(/{{age}}/g, '');
+    const textToSend = customMessage || settings.customMessage.replace(/{{name}}/g, contact.name).replace(/{{age}}/g, '');
+    const variables:Record<string,string> = {};
+    if ((birthdayTemplate.variableCount || 0) > 0) variables['1'] = contact.name;
 
-    // In WhatsApp Business Cloud API, outside-24h conversations require an approved template.
-    // Try sending direct text first, and if outside 24h window, fallback to official approved 'hello_world' template.
-    let sendResult = await WhatsAppService.sendTextMessage({
+    const sendResult = await WhatsAppService.sendTemplateMessage({
       phoneNumberId: creds.phoneNumberId,
       accessToken: creds.accessToken,
       apiVersion: creds.apiVersion || 'v21.0',
       recipientPhone: contact.phone,
-      text: textToSend,
+      templateName: birthdayTemplate.name,
+      templateLanguage: birthdayTemplate.language,
+      variables,
+      templateComponents: Array.isArray(birthdayTemplate.components) ? birthdayTemplate.components : [],
+      fallbackToHelloWorldIfNotFound: false,
     });
 
-    let usedTemplate = 'Direct Birthday Message';
-    if (!sendResult.success && (sendResult.errorCode === '131026' || sendResult.error?.includes('131026') || sendResult.error?.includes('24 hours'))) {
-      console.log(`[Wishflow] Contact ${contact.name} outside 24h service window. Falling back to WhatsApp default approved 'hello_world' template...`);
-      sendResult = await WhatsAppService.sendTemplateMessage({
-        phoneNumberId: creds.phoneNumberId,
-        accessToken: creds.accessToken,
-        apiVersion: creds.apiVersion || 'v21.0',
-        recipientPhone: contact.phone,
-        templateName: 'hello_world',
-        templateLanguage: 'en_US',
-        variables: {},
-      });
-      usedTemplate = 'hello_world (WhatsApp Approved)';
-    }
-
     const now = new Date();
-    const currentYear = now.getFullYear();
-
     if (sendResult.success) {
-      // Record history
       await this.handleBirthdayAutomationCompleted({
         automationId: 0,
         contactId: contact.id,
-        completedYear: currentYear,
-        status: 'SENT',
-        templateName: usedTemplate,
+        completedYear: now.getFullYear(),
+        status: 'ACCEPTED',
+        templateName: birthdayTemplate.name,
         messageText: textToSend,
       });
-
-      return { success: true, messageId: sendResult.whatsappMessageId };
-    } else {
-      return { success: false, error: sendResult.error };
+      return { success: true, messageId: sendResult.whatsappMessageId, status: 'ACCEPTED' };
     }
+    return { success: false, error: sendResult.error };
   }
 
   /**

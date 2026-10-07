@@ -11,7 +11,7 @@ class BiometricService {
     }
   }
 
-  static Future<bool> authenticate({String reason = 'Authenticate to continue to WishFlow'}) async {
+  static Future<bool> authenticate({String reason = 'Authenticate to continue to GreetSync'}) async {
     try {
       return await _channel.invokeMethod<bool>('authenticate', {'reason': reason}) ?? false;
     } on PlatformException {

@@ -1,7 +1,12 @@
 plugins {
     id "com.android.application"
-    id "kotlin-android"
+    id "org.jetbrains.kotlin.android"
     id "dev.flutter.flutter-gradle-plugin"
+}
+
+// Native Firebase resources are needed for delivery when the app is closed.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
 }
 
 android {
@@ -20,7 +25,7 @@ android {
 
     defaultConfig {
         applicationId = "com.aikyam.whatsappautomation"
-        minSdkVersion = flutter.minSdkVersion
+        minSdk = 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

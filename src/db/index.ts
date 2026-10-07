@@ -20,11 +20,19 @@ export const createPool = () => {
   if (!global._postgresPool) {
     const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
+    if (process.env.NODE_ENV === 'production' && !connectionString) {
+      throw new Error('DATABASE_URL is required in production. Configure the Railway PostgreSQL URL/reference on the backend service.');
+    }
+
     if (connectionString) {
+      const isLocal = /(?:localhost|127\.0\.0\.1)(?::|\/|$)/i.test(connectionString);
+      const sslDisabled = String(process.env.DATABASE_SSL || '').toLowerCase() === 'false';
       global._postgresPool = new Pool({
         connectionString,
+        ssl: isLocal || sslDisabled ? false : { rejectUnauthorized: false },
         max: 10,
-        connectionTimeoutMillis: 4000,
+        connectionTimeoutMillis: 10000,
+        idleTimeoutMillis: 30000,
       });
     } else {
       const rawPassword =
@@ -91,6 +99,8 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           approved_at TIMESTAMP,
           approved_by_id INTEGER,
           last_login_at TIMESTAMP,
+          deletion_requested_at TIMESTAMP,
+          purge_after TIMESTAMP,
           created_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
@@ -99,9 +109,16 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'PENDING';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS business_name TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS business_address TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS business_logo_data TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_by_id INTEGER;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS purge_after TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_accepted_at TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS legal_version TEXT;
+        CREATE INDEX IF NOT EXISTS users_purge_after_idx ON users(purge_after) WHERE purge_after IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS users_phone_unique_idx ON users(phone) WHERE phone IS NOT NULL;
         CREATE TABLE IF NOT EXISTS password_reset_requests (
           id SERIAL PRIMARY KEY,
@@ -203,6 +220,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           birthday_automation_enabled BOOLEAN NOT NULL DEFAULT TRUE,
           email TEXT,
           notes TEXT,
+          avatar_data TEXT,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
@@ -210,6 +228,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email TEXT;
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS dob TEXT;
         ALTER TABLE contacts ADD COLUMN IF NOT EXISTS birthday_automation_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_data TEXT;
         CREATE TABLE IF NOT EXISTS contact_groups (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -230,6 +249,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
           meta_template_id TEXT UNIQUE,
           name TEXT NOT NULL,
+          display_name TEXT,
           language TEXT NOT NULL,
           category TEXT NOT NULL,
           status TEXT NOT NULL,
@@ -240,6 +260,8 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           updated_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS display_name TEXT;
+        UPDATE message_templates SET display_name = name WHERE display_name IS NULL;
         CREATE TABLE IF NOT EXISTS automations (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -256,6 +278,24 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           updated_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE automations ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        ALTER TABLE automations ADD COLUMN IF NOT EXISTS template_snapshot JSONB;
+        ALTER TABLE automations ADD COLUMN IF NOT EXISTS send_request_id TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS automations_send_request_idx ON automations(send_request_id);
+        ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS edit_submissions JSONB NOT NULL DEFAULT '[]'::jsonb;
+        CREATE TABLE IF NOT EXISTS message_media (
+          media_id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          mime_type TEXT NOT NULL, file_name TEXT NOT NULL, data_base64 TEXT NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS meta_webhook_inbox (id BIGSERIAL PRIMARY KEY,payload JSONB NOT NULL,processed_at TIMESTAMP,attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,created_at TIMESTAMP NOT NULL DEFAULT NOW(),next_attempt_at TIMESTAMP NOT NULL DEFAULT NOW());
+        ALTER TABLE meta_webhook_inbox ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP NOT NULL DEFAULT NOW();
+        CREATE TABLE IF NOT EXISTS push_devices (
+          token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS onboarding_mode TEXT NOT NULL DEFAULT 'CLOUD_API';
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS coexistence_sync_status TEXT NOT NULL DEFAULT 'NOT_STARTED';
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS coexistence_sync_requests JSONB NOT NULL DEFAULT '{}'::jsonb;
         CREATE TABLE IF NOT EXISTS messages (
           id SERIAL PRIMARY KEY,
           owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -278,6 +318,15 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW()
         );
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        -- Preserve historical direct sends in the same message activity list.
+        INSERT INTO automations(owner_user_id,contact_id,template_id,variables,template_snapshot,scheduled_at,timezone,status,executed_at,error_message,send_request_id)
+        SELECT m.owner_user_id,m.contact_id,t.id,COALESCE(m.variables,'{}'::jsonb)||'{"__send_now":"true","__legacy_preview":"true"}'::jsonb,
+          jsonb_build_object('name',t.name,'language',t.language,'category',t.category,'components',t.components),
+          COALESCE(m.sent_at,m.created_at,NOW()),'Asia/Kolkata',m.status,COALESCE(m.sent_at,m.created_at,NOW()),m.error_message,'legacy_message_'||m.id
+        FROM messages m JOIN LATERAL(SELECT * FROM message_templates WHERE owner_user_id=m.owner_user_id AND name=m.template_name AND language=m.template_language LIMIT 1)t ON TRUE
+        WHERE m.automation_id IS NULL AND m.direction='OUTBOUND' AND m.message_type='TEMPLATE'
+        ON CONFLICT(send_request_id) DO NOTHING;
+        UPDATE messages m SET automation_id=a.id FROM automations a WHERE m.automation_id IS NULL AND a.send_request_id='legacy_message_'||m.id;
         CREATE TABLE IF NOT EXISTS automation_executions (
           id SERIAL PRIMARY KEY,
           automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
@@ -292,6 +341,72 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         CREATE INDEX IF NOT EXISTS automations_status_schedule_idx ON automations(status, scheduled_at);
         CREATE INDEX IF NOT EXISTS messages_owner_created_idx ON messages(owner_user_id, created_at);
         CREATE INDEX IF NOT EXISTS templates_owner_status_idx ON message_templates(owner_user_id, status);
+        CREATE TABLE IF NOT EXISTS notifications (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          target_role TEXT NOT NULL DEFAULT 'BUSINESS',
+          type TEXT NOT NULL DEFAULT 'SYSTEM',
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          entity_type TEXT,
+          entity_id INTEGER,
+          read_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS notifications_role_idx ON notifications(target_role, created_at DESC);
+        CREATE TABLE IF NOT EXISTS subscription_packages (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT,
+          package_type TEXT NOT NULL DEFAULT 'BASE',
+          benefits JSONB NOT NULL DEFAULT '[]'::jsonb,
+          message_limit INTEGER NOT NULL DEFAULT 0,
+          contact_limit INTEGER NOT NULL DEFAULT 0,
+          automation_limit INTEGER NOT NULL DEFAULT 0,
+          price_paise INTEGER NOT NULL DEFAULT 0,
+          duration_months INTEGER NOT NULL DEFAULT 1,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS user_subscriptions (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          package_id INTEGER NOT NULL REFERENCES subscription_packages(id) ON DELETE RESTRICT,
+          status TEXT NOT NULL DEFAULT 'PENDING',
+          starts_at TIMESTAMP,
+          ends_at TIMESTAMP,
+          approved_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          price_paise_snapshot INTEGER NOT NULL DEFAULT 0,
+          message_limit_snapshot INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS subscription_packages_active_idx ON subscription_packages(is_active, package_type);
+        CREATE INDEX IF NOT EXISTS user_subscriptions_user_status_idx ON user_subscriptions(user_id, status);
+        CREATE INDEX IF NOT EXISTS user_subscriptions_end_idx ON user_subscriptions(ends_at);
+        CREATE TABLE IF NOT EXISTS template_suggestions (
+          id SERIAL PRIMARY KEY,
+          created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          title TEXT NOT NULL,
+          festival TEXT,
+          description TEXT,
+          template_name TEXT NOT NULL,
+          language TEXT NOT NULL DEFAULT 'en_US',
+          category TEXT NOT NULL DEFAULT 'MARKETING',
+          header TEXT,
+          body TEXT NOT NULL,
+          footer TEXT,
+          buttons JSONB NOT NULL DEFAULT '[]'::jsonb,
+          active_from TIMESTAMP,
+          active_until TIMESTAMP,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS template_suggestions_active_idx ON template_suggestions(is_active, active_from, active_until);
         CREATE TABLE IF NOT EXISTS audit_logs (
           id SERIAL PRIMARY KEY,
           action TEXT NOT NULL,

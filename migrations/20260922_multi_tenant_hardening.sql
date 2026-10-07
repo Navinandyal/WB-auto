@@ -1,4 +1,4 @@
--- WishFlow multi-tenant hardening.
+-- GreetSync multi-tenant hardening.
 -- In the current project, each BUSINESS_OWNER user row is the tenant/business record.
 -- owner_user_id therefore acts as business_id across business-owned tables.
 

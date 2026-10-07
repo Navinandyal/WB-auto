@@ -1,6 +1,6 @@
-# WishFlow Production Authentication + WhatsApp Onboarding Update
+# GreetSync Production Authentication + WhatsApp Onboarding Update
 
-This build implements the production flow requested in `Pasted text(20260922-062301).txt` on top of the existing WishFlow codebase.
+This build implements the production flow requested in `Pasted text(20260922-062301).txt` on top of the existing GreetSync codebase.
 
 ## Authentication
 
@@ -72,7 +72,7 @@ Per-business WhatsApp tokens/IDs are stored in PostgreSQL and sensitive fields a
 
 ## WhatsApp verified-business screen behavior
 
-The business user does **not** need a verified WhatsApp account to sign in to WishFlow. Software login is controlled only by mobile/password plus WishFlow admin approval/account status.
+The business user does **not** need a verified WhatsApp account to sign in to GreetSync. Software login is controlled only by mobile/password plus GreetSync admin approval/account status.
 
 After login, the WhatsApp screen has four persistent states:
 
@@ -81,4 +81,4 @@ After login, the WhatsApp screen has four persistent states:
 3. **CONNECTED** — the user taps Verify with Meta; the backend decrypts that business's token, calls Meta using its Phone Number ID/WABA, and stores verified name/display number/quality/status. The UI then shows WhatsApp Connected.
 4. **CONNECTION_ERROR** — Meta verification failed, but all saved credentials remain stored and visible as masked previews. The user can edit and retry without re-entering every value.
 
-For production Meta Embedded Signup, Meta itself opens the authentication/onboarding UI. The business owner signs in directly with Meta, selects/creates a Business Portfolio, WABA and phone number, grants permissions, and Meta returns authorization to the WishFlow backend. WishFlow never asks for or stores the Facebook password.
+For production Meta Embedded Signup, Meta itself opens the authentication/onboarding UI. The business owner signs in directly with Meta, selects/creates a Business Portfolio, WABA and phone number, grants permissions, and Meta returns authorization to the GreetSync backend. GreetSync never asks for or stores the Facebook password.

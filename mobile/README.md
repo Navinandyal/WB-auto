@@ -1,4 +1,4 @@
-# WishFlow Flutter
+# GreetSync Flutter
 
 ## Current login flow
 

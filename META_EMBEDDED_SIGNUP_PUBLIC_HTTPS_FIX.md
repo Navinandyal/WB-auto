@@ -1,17 +1,17 @@
 # Meta Embedded Signup public HTTPS fix
 
-The previous mobile flow could render the WishFlow signup helper page through `127.0.0.1:3000` using ADB reverse, but Meta/Facebook Business Login is not a reliable OAuth/Embedded Signup origin on that local HTTP address. The result can be a blank or indefinitely loading Chrome page after **Continue with Meta**.
+The previous mobile flow could render the GreetSync signup helper page through `127.0.0.1:3000` using ADB reverse, but Meta/Facebook Business Login is not a reliable OAuth/Embedded Signup origin on that local HTTP address. The result can be a blank or indefinitely loading Chrome page after **Continue with Meta**.
 
 ## Fixed architecture
 
-1. Super Admin configures the WishFlow Meta Developer App once.
-2. Admin also configures a **Public HTTPS Backend URL**, e.g. `https://api.wishflow.example.com`.
+1. Super Admin configures the GreetSync Meta Developer App once.
+2. Admin also configures a **Public HTTPS Backend URL**, e.g. `https://api.greetsync.example.com`.
 3. The business app requests `/api/whatsapp/embedded-signup/session`.
 4. The backend creates a short-lived signed signup session and returns a URL on the configured HTTPS origin.
-5. Chrome opens the public HTTPS WishFlow page.
+5. Chrome opens the public HTTPS GreetSync page.
 6. The page loads Meta's official JavaScript SDK and calls Embedded Signup with the configured `config_id`.
 7. The business owner signs into their own Meta account and selects their own Business Portfolio, WABA and phone number.
-8. WishFlow receives the authorization code + WABA/phone mapping, exchanges the code server-side, encrypts the resulting token and stores it against that business.
+8. GreetSync receives the authorization code + WABA/phone mapping, exchanges the code server-side, encrypts the resulting token and stores it against that business.
 9. The Flutter screen polls `/api/whatsapp/connection` and returns to Connected when the backend has persisted the connection.
 
 ## Required Meta dashboard setup

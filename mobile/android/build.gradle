@@ -1,17 +1,18 @@
-allprojects { repositories { google(); mavenCentral() } }
-rootProject.buildDir = '../build'
-subprojects { project.buildDir = "${rootProject.buildDir}/${project.name}" }
-subprojects { project.evaluationDependsOn(':app') }
-tasks.register("clean", Delete) { delete rootProject.buildDir }
-
-
-// Keep AndroidX dependencies compatible with the cached AGP 8.7.3 / Gradle 8.9 toolchain.
-// url_launcher 6.3.x can otherwise resolve androidx.browser 1.9.0 and core 1.17.0,
-// both of which require AGP 8.9.1+.
-subprojects {
-    configurations.configureEach {
-        resolutionStrategy.force "androidx.browser:browser:1.8.0"
-        resolutionStrategy.force "androidx.core:core:1.15.0"
-        resolutionStrategy.force "androidx.core:core-ktx:1.15.0"
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
     }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
 }

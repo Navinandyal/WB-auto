@@ -1,6 +1,6 @@
 # Meta webhook verification fix
 
-WishFlow now uses one platform-level webhook verify token for the Meta Developer App.
+GreetSync now uses one platform-level webhook verify token for the Meta Developer App.
 
 - Admin Settings displays the current token.
 - The token is generated with 32 random bytes and stored encrypted in PostgreSQL.

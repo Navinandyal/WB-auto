@@ -118,7 +118,7 @@ export const BirthdayView: React.FC = () => {
       if (retries > 0) {
         setTimeout(() => loadData(retries - 1), 800);
       } else {
-        console.warn('Notice loading Birthday WishFlow data:', err?.message || err);
+        console.warn('Notice loading Birthday Automation data:', err?.message || err);
       }
     } finally {
       setLoading(false);
@@ -170,8 +170,8 @@ export const BirthdayView: React.FC = () => {
         );
         showToast(
           nextStatus
-            ? 'Birthday WishFlow enabled for contact'
-            : 'Birthday WishFlow paused for contact'
+            ? 'Birthday Automation enabled for contact'
+            : 'Birthday Automation paused for contact'
         );
       }
     } catch (err) {
@@ -189,7 +189,7 @@ export const BirthdayView: React.FC = () => {
         body: JSON.stringify(settings),
       });
       if (res.ok) {
-        showToast('WishFlow settings updated and scheduled dates refreshed!');
+        showToast('GreetSync settings updated and scheduled dates refreshed!');
         await loadData();
       } else {
         showToast('Failed to update settings', 'error');
@@ -403,7 +403,7 @@ export const BirthdayView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-white tracking-tight">
-                  Birthday WishFlow
+                  Birthday Automation
                 </h1>
                 <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                   Annual Auto-Pilot
@@ -446,7 +446,7 @@ export const BirthdayView: React.FC = () => {
               }`}
             >
               <Settings className="w-3.5 h-3.5 text-amber-400" />
-              Configure WishFlow
+              Configure GreetSync
             </button>
           </div>
         </div>
@@ -636,7 +636,7 @@ export const BirthdayView: React.FC = () => {
                       <th className="py-3 px-4 font-medium">Date of Birth</th>
                       <th className="py-3 px-4 font-medium">Countdown / Turning</th>
                       <th className="py-3 px-4 font-medium">Next Wish Schedule</th>
-                      <th className="py-3 px-4 font-medium">WishFlow Status</th>
+                      <th className="py-3 px-4 font-medium">GreetSync Status</th>
                       <th className="py-3 px-4 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
@@ -714,7 +714,7 @@ export const BirthdayView: React.FC = () => {
                           )}
                         </td>
 
-                        {/* WishFlow Status & Toggle */}
+                        {/* GreetSync Status & Toggle */}
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-2.5">
                             {/* Toggle Switch */}
@@ -1003,7 +1003,7 @@ export const BirthdayView: React.FC = () => {
             <div>
               <h2 className="text-base font-semibold text-white flex items-center gap-2">
                 <Settings className="w-4 h-4 text-amber-400" />
-                WishFlow Engine Configuration
+                GreetSync Engine Configuration
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
                 Configure global settings, send time, and template defaults for annual birthday automations.
@@ -1246,7 +1246,7 @@ export const BirthdayView: React.FC = () => {
               <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl text-xs text-slate-400 flex items-start gap-2">
                 <PartyPopper className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <span>
-                  This immediately sends via the official WhatsApp Cloud API and records the completion for {new Date().getFullYear()} in WishFlow history.
+                  This immediately sends via the official WhatsApp Cloud API and records the completion for {new Date().getFullYear()} in GreetSync history.
                 </span>
               </div>
             </div>

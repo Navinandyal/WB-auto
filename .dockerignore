@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+mobile
+*.zip
+*.apk
+*.log
+.env
+.dart_tool
+build
+**/build
+.railway
+PRODUCTION_DEPLOYMENT_INFO.txt

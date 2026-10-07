@@ -111,6 +111,33 @@ export const ScheduledAutomationsView: React.FC<ScheduledAutomationsViewProps> =
     loadSimulationMode();
   }, []);
 
+  useEffect(() => {
+    const pending = ['ACCEPTED', 'PROCESSING', 'SENT', 'DELIVERED'];
+    if (!automations.some(a => pending.includes(a.status)) && !pending.includes(selectedItem?.automation.status || '')) return;
+    let active = true, refreshing = false;
+    const timer = window.setInterval(async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const response = await fetchWithAuth('/api/automations');
+        if (response.ok) {
+          const list = await response.json();
+          if (active) setAutomations(list);
+        }
+        if (selectedItem && pending.includes(selectedItem.automation.status)) {
+          const details = await fetchWithAuth(`/api/automations/${selectedItem.automation.id}`);
+          if (details.ok) {
+            const data = await details.json();
+            if (active) setSelectedItem(current => current?.automation.id === data.automation.id ? data : current);
+          }
+        }
+      } catch { /* Keep the last confirmed state on a temporary network failure. */ }
+      finally { refreshing = false; }
+    }, 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [automations, selectedItem?.automation.id, selectedItem?.automation.status, fetchWithAuth]);
+
+
   const handleCancel = async (id: number) => {
     if (!window.confirm('Are you sure you want to cancel this scheduled automation?')) {
       return;
@@ -219,7 +246,7 @@ export const ScheduledAutomationsView: React.FC<ScheduledAutomationsViewProps> =
         setFeedback({
           type: 'success',
           title: 'Queue Executed Successfully',
-          message: `Processed ${result.processed} automation(s). All sent successfully!`,
+          message: `Processed ${result.processed} automation(s). Requests accepted. Check each message’s delivery status.`,
         });
       } else if (result.failureCount > 0) {
         const firstError = result.details?.[0]?.error || 'Credentials not configured';
@@ -261,10 +288,16 @@ export const ScheduledAutomationsView: React.FC<ScheduledAutomationsViewProps> =
             <RotateCcw className="w-3 h-3 animate-spin" /> PROCESSING
           </span>
         );
+      case 'ACCEPTED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30" title="Meta accepted the request; recipient delivery has not been confirmed">
+            <Clock className="w-3 h-3" /> AWAITING DELIVERY
+          </span>
+        );
       case 'SENT':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title="Delivered to Meta WhatsApp Cloud API">
-            <CheckCircle2 className="w-3 h-3 text-emerald-400" /> SENT TO META API
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title="WhatsApp confirmed the message was sent; awaiting recipient delivery">
+            <CheckCircle2 className="w-3 h-3 text-emerald-400" /> SENT
           </span>
         );
       case 'SIMULATED':

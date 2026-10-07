@@ -1,70 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
+import '../theme/business_theme.dart';
+import '../widgets/common.dart';
 
 class AdminDashboardScreen extends ConsumerWidget {
   const AdminDashboardScreen({super.key});
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final overview = ref.watch(adminOverviewProvider);
-    return RefreshIndicator(
-      onRefresh: () async => ref.refresh(adminOverviewProvider.future),
-      child: overview.when(
-        loading: () => ListView(children: const [SizedBox(height: 240), Center(child: CircularProgressIndicator())]),
-        error: (e, _) => ListView(padding: const EdgeInsets.all(20), children: [const SizedBox(height: 140), const Icon(Icons.error_outline, size: 50, color: Colors.red), const SizedBox(height: 12), Text('$e', textAlign: TextAlign.center)]),
-        data: (d) => ListView(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 30),
-          children: [
-            const Text('Dashboard', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: Color(0xFF071A63))),
-            const SizedBox(height: 4),
-            const Text("Platform overview from live database data", style: TextStyle(color: Color(0xFF62729B))),
-            const SizedBox(height: 18),
-            Wrap(spacing: 12, runSpacing: 12, children: [
-              _metric('Businesses', d.totalBusinesses, Icons.business_outlined, const Color(0xFF0867FF)),
-              _metric('Pending Approval', d.pendingApprovals, Icons.hourglass_top_rounded, const Color(0xFFF59E0B)),
-              _metric('Contacts', d.totalContacts, Icons.people_alt_outlined, const Color(0xFF7C3AED)),
-              _metric('Automations', d.totalAutomations, Icons.settings_suggest_outlined, const Color(0xFFEC4899)),
-              _metric('Messages', d.totalMessages, Icons.send_outlined, const Color(0xFF10B981)),
-            ]),
-            const SizedBox(height: 22),
-            Card(
-              color: const Color(0xFFF4F8FF),
-              elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18), side: const BorderSide(color: Color(0xFFDDE8FA))),
-              child: const Padding(
-                padding: EdgeInsets.all(18),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  CircleAvatar(backgroundColor: Color(0xFFE2EEFF), child: Icon(Icons.shield_outlined, color: Color(0xFF0867FF))),
-                  SizedBox(width: 14),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('Admin Approval Control', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: Color(0xFF071A63))),
-                    SizedBox(height: 6),
-                    Text('New business accounts cannot sign in until you approve them. WhatsApp credentials are owned by each business and are not shared globally.', style: TextStyle(color: Color(0xFF526487), height: 1.45)),
-                  ])),
-                ]),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _metric(String label, int value, IconData icon, Color color) => SizedBox(
-    width: 170,
-    child: Card(
-      elevation: 0,
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Color(0xFFE2EAF7))),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(width: 42, height: 42, decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(12)), child: Icon(icon, color: color)),
-          const SizedBox(height: 14),
-          Text('$value', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: Color(0xFF071A63))),
-          Text(label, style: const TextStyle(color: Color(0xFF617096))),
-        ]),
-      ),
-    ),
-  );
+  @override Widget build(BuildContext context,WidgetRef ref){final overview=ref.watch(adminOverviewProvider);return RefreshIndicator(onRefresh:() async { ref.invalidate(adminOverviewProvider); await ref.read(adminOverviewProvider.future); },child:overview.when(loading:()=>ListView(children:const[SizedBox(height:240),Center(child:CircularProgressIndicator())]),error:(e,_)=>ListView(padding:const EdgeInsets.all(20),children:[const SizedBox(height:140),ErrorState(e,onRetry:()=>ref.invalidate(adminOverviewProvider))]),data:(d){
+    final primary=Theme.of(context).colorScheme.primary;final active=(d.totalBusinesses-d.pendingApprovals).clamp(0,d.totalBusinesses);final approvalRate=d.totalBusinesses==0?0.0:active/d.totalBusinesses;final messagesPerBusiness=d.totalBusinesses==0?0:(d.totalMessages/d.totalBusinesses).round();
+    return ListView(padding:const EdgeInsets.fromLTRB(16,14,16,30),children:[
+      const Text('Platform Dashboard',style:TextStyle(fontSize:29,fontWeight:FontWeight.w900,color:BusinessColors.ink)),const SizedBox(height:4),const Text('Live overview of businesses, audiences and automation activity.',style:TextStyle(color:BusinessColors.muted)),const SizedBox(height:16),
+      Container(padding:const EdgeInsets.all(20),decoration:BoxDecoration(gradient:LinearGradient(colors:[const Color(0xFF102D69),primary],begin:Alignment.topLeft,end:Alignment.bottomRight),borderRadius:BorderRadius.circular(26),boxShadow:[BoxShadow(color:primary.withOpacity(.16),blurRadius:22,offset:const Offset(0,10))]),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Row(children:[Container(width:48,height:48,decoration:BoxDecoration(color:Colors.white.withOpacity(.14),borderRadius:BorderRadius.circular(16)),child:const Icon(Icons.monitor_heart_outlined,color:Colors.white)),const SizedBox(width:12),const Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('GreetSync Platform',style:TextStyle(color:Colors.white,fontSize:20,fontWeight:FontWeight.w900)),Text('Business automation control center',style:TextStyle(color:Colors.white70))])),Container(padding:const EdgeInsets.symmetric(horizontal:10,vertical:6),decoration:BoxDecoration(color:Colors.white.withOpacity(.14),borderRadius:BorderRadius.circular(20)),child:const Text('LIVE',style:TextStyle(color:Colors.white,fontWeight:FontWeight.w900,fontSize:10)))]),const SizedBox(height:20),Row(children:[Expanded(child:_HeroMetric(value:'${d.totalBusinesses}',label:'Businesses')),Expanded(child:_HeroMetric(value:'${d.totalMessages}',label:'Messages')),Expanded(child:_HeroMetric(value:'${d.totalAutomations}',label:'Automations'))])])),
+      const SizedBox(height:14),
+      GridView.count(crossAxisCount:2,shrinkWrap:true,physics:const NeverScrollableScrollPhysics(),childAspectRatio:1.48,mainAxisSpacing:10,crossAxisSpacing:10,children:[_AnimatedMetric('Pending approvals',d.pendingApprovals,Icons.pending_actions_rounded,const Color(0xFFF59E0B)),_AnimatedMetric('Total contacts',d.totalContacts,Icons.groups_rounded,const Color(0xFF7C3AED)),_AnimatedMetric('Automations',d.totalAutomations,Icons.auto_mode_rounded,const Color(0xFFE83E8C)),_AnimatedMetric('Messages',d.totalMessages,Icons.send_rounded,BusinessColors.green)]),
+      const SizedBox(height:16),
+      Row(children:[Expanded(child:_InsightCard(icon:Icons.verified_user_outlined,title:'Approval Health',value:'${(approvalRate*100).toStringAsFixed(0)}%',caption:'$active of ${d.totalBusinesses} businesses active',progress:approvalRate,color:BusinessColors.green)),const SizedBox(width:10),Expanded(child:_InsightCard(icon:Icons.speed_rounded,title:'Avg. Activity',value:'$messagesPerBusiness',caption:'messages per business',progress:(messagesPerBusiness/100).clamp(0,1).toDouble(),color:const Color(0xFF2F80ED)))]),
+      const SizedBox(height:16),
+      Card(child:Padding(padding:const EdgeInsets.all(18),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Row(children:[SoftIcon(Icons.admin_panel_settings_outlined,color:Color(0xFF2F80ED)),SizedBox(width:10),Expanded(child:Text('Admin Control',style:TextStyle(fontSize:18,fontWeight:FontWeight.w900)))]),const SizedBox(height:12),_Line(icon:Icons.person_add_alt_1_rounded,text:d.pendingApprovals>0?'${d.pendingApprovals} business account(s) require approval.':'No pending business approvals.',color:d.pendingApprovals>0?Colors.orange:BusinessColors.green),const SizedBox(height:9),const _Line(icon:Icons.security_rounded,text:'Business WhatsApp credentials remain tenant-isolated.',color:Color(0xFF2F80ED)),const SizedBox(height:9),const _Line(icon:Icons.analytics_outlined,text:'Reports and notification feeds use live platform data.',color:Color(0xFF7C3AED))]))),
+    ]);
+  }));}
 }
+class _HeroMetric extends StatelessWidget{const _HeroMetric({required this.value,required this.label});final String value,label;@override Widget build(BuildContext context)=>Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(value,style:const TextStyle(color:Colors.white,fontSize:24,fontWeight:FontWeight.w900)),Text(label,style:const TextStyle(color:Colors.white70,fontSize:11))]);}
+class _AnimatedMetric extends StatelessWidget{const _AnimatedMetric(this.label,this.value,this.icon,this.color);final String label;final int value;final IconData icon;final Color color;@override Widget build(BuildContext context)=>Card(child:Padding(padding:const EdgeInsets.all(15),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Container(width:38,height:38,decoration:BoxDecoration(color:color.withOpacity(.11),borderRadius:BorderRadius.circular(12)),child:Icon(icon,color:color,size:21)),const Spacer(),TweenAnimationBuilder<double>(tween:Tween<double>(begin:0,end:value.toDouble()),duration:const Duration(milliseconds:650),builder:(_,v,__)=>Text('${v.round()}',style:const TextStyle(fontSize:23,fontWeight:FontWeight.w900,color:BusinessColors.ink))),Text(label,style:const TextStyle(fontSize:11,color:BusinessColors.muted))])));}
+class _InsightCard extends StatelessWidget{const _InsightCard({required this.icon,required this.title,required this.value,required this.caption,required this.progress,required this.color});final IconData icon;final String title,value,caption;final double progress;final Color color;@override Widget build(BuildContext context)=>Card(child:Padding(padding:const EdgeInsets.all(14),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Icon(icon,color:color),const SizedBox(height:9),Text(title,style:const TextStyle(fontWeight:FontWeight.w800,fontSize:12)),const SizedBox(height:5),Text(value,style:const TextStyle(fontSize:21,fontWeight:FontWeight.w900)),Text(caption,maxLines:2,style:const TextStyle(fontSize:10,color:BusinessColors.muted)),const SizedBox(height:9),ClipRRect(borderRadius:BorderRadius.circular(10),child:LinearProgressIndicator(value:progress,minHeight:6,backgroundColor:color.withOpacity(.10),color:color))])));}
+class _Line extends StatelessWidget{const _Line({required this.icon,required this.text,required this.color});final IconData icon;final String text;final Color color;@override Widget build(BuildContext context)=>Row(children:[Icon(icon,size:18,color:color),const SizedBox(width:9),Expanded(child:Text(text,style:const TextStyle(color:BusinessColors.muted,height:1.35)))]);}
