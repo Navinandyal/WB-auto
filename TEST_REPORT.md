@@ -67,3 +67,163 @@ Passed **93 backend tests**, **18 isolated PostgreSQL scenarios**, **22 executab
 All four changed mobile source files and the Dart check were formatted and analyzed offline: **0 errors / 0 warnings**, with **116 lint/deprecation information items**. The temporary analyzer SDK needed dart:ui framework metadata restored before it could analyze Flutter source; that environment repair is not a mobile source change. Temporary snapshots and manual analyzer configuration are excluded from the ZIP.
 
 Two actual attached screenshots were inspected locally. The production public health endpoint reported the preceding guided-AI build; both callback aliases rejected an intentionally incorrect verification token with HTTP 403. These are read-only reachability checks, not a valid-token challenge, authenticated delivery diagnosis, signature verification or deployment. No native build, widget/device execution, live Meta/AI generation, message send, production settings change or new backend deployment was performed. A pending label with a message ID and no recorded receipt does not prove a specific Meta delivery error or identify which setting is wrong in production.
+
+## iPhone/Xcode source preparation — 7 October 2026
+
+Based only on the supplied **GreetSync_Webhook_Dynamic_AI_Fix_20261006(1).zip**. App version remains **1.0.3+4**. Backend files are byte-identical to that attachment; prior backend test entries above are historical results and were not rerun for this platform-only change. The Oct 7 admin redesign was not merged.
+
+Checks performed in this Linux workspace:
+
+- All **11 portable iOS setup regressions passed**: backend origin validation, Debug-only HTTP, clearing previous Debug/push settings, bundle/team validation, matching/missing Firebase checks, malformed/missing Dart definitions, modern export method selection and APNs environment selection. Fixtures include paths containing spaces.
+- All **6 Dart iOS reminder checks passed**: future/scheduled filtering, chronological order, nearest-50 capacity, UTC instant preservation, contact/template text and empty-list synchronization.
+- **37 native/static structure checks passed**: parsed OpenStep Xcode project and object references; XML workspaces/scheme/storyboards; plist/entitlement parsing; opaque, correctly sized app icons; optional Firebase copy/removal in paths containing spaces; shell phase syntax.
+- The four Mac commands and their shared shell script passed `bash -n`. The run command rejects Linux with a clear macOS/Xcode requirement. Help is available without attempting a build.
+- Offline full `mobile/lib` Dart source analysis found **zero errors, six pre-existing warnings**, and existing lint/deprecation information items. Final analysis of all six changed/new Dart files found **zero errors and zero warnings**, with one existing `withOpacity` deprecation information item in HomeShell. Files were parsed/formatted with Dart. Source analysis used official Flutter framework/engine source and manually selected package snapshots; this is not normal Flutter dependency resolution.
+- Original attachment comparison passed: backend, Android native project, prior UI and other original files remain byte-identical except the documented platform service/hooks, package configuration, ignore rules and guides. No owner Apple/Firebase credentials, temporary SDK, analyzer package mappings, Pods or build outputs are included.
+
+**Not performed here:** real `flutter pub get` resolution, CocoaPods installation, Swift compilation, Xcode simulator/device builds, Apple provisioning/signing, an actual IPA export, iPhone permission/UI tests, live APNs/FCM, live Meta delivery or backend deployment. These require a Mac/Xcode and the owner's backend/Apple/Firebase accounts. The ZIP contains source plus commands to perform those checks and a signed IPA export on the Mac; it contains no `.ipa`.
+
+Start with **IPHONE_MAC_START_HERE.md**. Run PREPARE and CHECK on the Mac, then run the app on the connected iPhone in Xcode before exporting the IPA. A passing simulator build alone does not establish signed physical-device or production delivery behavior.
+
+
+## Automatic setup without repeated account prompts — 13 October 2026
+
+Based only on the latest uploaded `GreetSync_iPhone_Xcode_Ready_20261007(4).zip`. The Windows setup reuses the cached login/token and configured project/environment IDs, resolves PostgreSQL deployment variables automatically, distinguishes public migration and private production URLs, retains existing/extra `.env` settings and backend auth/encryption keys, leaves sealed secrets unchanged, and restores process environment overrides in `finally`. It does not call `Read-Host`, `railway login` or `railway logout` during normal setup. A separate one-time login helper exists for a new PC/expired session. APK-only mode needs no Railway commands or backend migration.
+
+PowerShell 7.4.13 parsing and **163 assertions across 21 mocked workflows passed**. Successful/failure/repeat cases verify explicit target IDs, current/alternate link response formats, no prompts, child migration URL overrides, AI key recovery from the PostgreSQL service, preservation of existing crypto/sealed secrets, extra local fields, token retention, process environment restoration, stopping on malformed or missing data/authentication and correct APK backend arguments. Test fixtures are removed after execution and are not part of the ZIP. The CLI's official variable controller was checked: its list operation reads service deployment variables and represents sealed values as null.
+
+All Android/iOS/backend application source remains byte-identical to the supplied ZIP. Earlier app/backend validation entries are historical. No production account login, live Railway deployment, production database mutation, native Windows launcher execution, Flutter/Gradle APK build or Xcode/IPA signing was performed here. The deliverable contains source/setup commands, not a newly compiled APK/IPA; account tokens and screenshot passwords/API keys are not included.
+
+## Android installation workflow update — 2026-10-13
+
+- `NO_PROMPT_SETUP_TESTS.ps1`: **196 assertions / 24 mocked workflows passed**.
+  Includes stale generated output, rejected APK verification, changed signing
+  identity and preservation of the previous root APK. No account prompts added.
+- `ANDROID_APK_TESTS.ps1`: **61 assertions passed** covering archive structure,
+  metadata/signature failures and nine mocked USB installation scenarios. Fresh
+  installation accepts Android's empty `pm path` exit 1; incompatible updates
+  stop before installation. Diagnostic output retains actual mocked failure codes.
+- Real Android SDK **Build-Tools 35.0.0** smoke checks passed with temporary
+  structural test APKs: certificate/manifest parsing, same-key compatibility,
+  rejection of different keys, unsigned APKs and altered contents.
+- Source supports owner `mobile/android/key.properties`; malformed/present owner
+  config fails instead of switching signing keys. Existing debug fallback is
+  retained when no owner key is supplied.
+- **Not verified:** a complete GreetSync Flutter/Gradle APK build, Windows execution,
+  or installation on the user's physical phone. The screenshot does not reveal
+  the exact Android installer code; the failing APK was not supplied.
+- No private signing keys, screenshot credentials, fabricated APK or signed IPA
+  are included in the source ZIP.
+
+
+## Certificate-output parser regression — 13 October 2026
+
+The prior helper accepted only numbered certificate lines and could reject
+successful Android verifier output with SDK-range signer labels. Both official
+formats are now supported, including Windows CRLF, uppercase/colon-separated
+hashes, leading whitespace and ANSI decoration. Public-key digests and source
+stamp certificates remain excluded. Real signature verification is still required.
+Raw tool output is saved to APK_VERIFICATION_DIAGNOSTIC.txt on verification runs.
+
+- **84 APK/installer assertions passed**, including certificate-format regressions
+  and generated-path, explicit-path and missing-file verification-only workflows.
+- **196 assertions / 24 mocked setup workflows passed** with the updated helper.
+- Real Android Build-Tools 35.0.0 checks still reject unsigned/tampered files and
+  different keys. An official V3.1 fixture reproduced the old zero-certificate
+  match and confirmed the new parser reads its two SDK-range signer certificates.
+- VERIFY_ANDROID_APK.cmd publishes an already-generated APK without a Flutter
+  rebuild or Railway login. Existing configured deployment/login is unchanged.
+- Windows execution, full GreetSync build and the user's phone installation remain
+  unverified. The phone's invalid-package error needs its actual Android diagnostic.
+
+## Build-Tools 37 scheme-label parser correction — 13 October 2026
+
+The user's supplied verification diagnostic reports exit 0 and a valid v2
+signature with `V2 Signer: certificate SHA-256 digest: ...`. The prior parser did
+not support this scheme-prefixed form. It now supports V1/V2/V3/V3.1/V3.2 and
+other numbered scheme labels, optionally with signer numbers/SDK ranges.
+Source-stamp certificates and public-key digests remain excluded.
+
+- Both exact attached diagnostic texts were parsed successfully, returning one
+  signer certificate and excluding their distinct public-key fingerprint.
+- **98 APK/installer assertions passed**, with the USB install and verification-only
+  flows now exercising scheme-prefixed output; **196 setup assertions passed**.
+- The real Android Build-Tools 35 signature and SDK-range fixtures still pass;
+  unsigned/tampered APKs and incompatible signing identities remain rejected.
+- The uploaded diagnostic files were read without modification and are excluded
+  from the project ZIP. They do not contain an adb device installation attempt.
+- No Windows or physical phone install was run here. The phone's earlier generic
+  invalid-package popup remains unclassified until the corrected helper reaches
+  adb and captures its precise failure or succeeds.
+
+Additional native verification: **real Build-Tools 37.0.0 apksigner** reproduced
+scheme-prefixed V2/V3.0 output. Corrected verification passed for signed V2/V3
+fixtures with identical certificates and recovered SDK-range V3.1/V3.0 identities
+from an official rotation fixture. Different keys, unsigned and tampered APKs
+were rejected. The final suites passed **98 APK/installer + 196 setup assertions**.
+No generated test APK or private fixture key is included in the deliverable.
+
+## Meta Embedded Signup / automatic business discovery — 13 October 2026
+
+The production signup route blocked its own Meta SDK with its CSP. The bridge
+now emits nonce-based headers permitting the required SDK, connection and popup
+resources. It validates Meta event origins and handles either event/code order,
+missing event data, retries, cancellation and expiry. The backend validates token
+app/permissions, authorized WABA membership and actual Coexistence phone state,
+fetches available business/profile metadata, and preserves owner isolation.
+Multiple numbers use protected selection with a temporary encrypted token and
+no second OAuth exchange. Selection rejects spoofed choices, expired sessions
+and wrong secrets; completion clears temporary credentials. Schema changes are
+additive and idempotent. Initial optional sync errors do not falsely invalidate
+a confirmed connection. Existing native app and setup/signing files are unchanged.
+
+- `npm run lint`: passed.
+- `npm test`: **122 passed, 0 failed**. Includes emitted-route CSP, bridge event
+  ordering, secure origins, verified asset discovery and real HTTP/PGlite session
+  isolation, encrypted selection, expiry and replay checks.
+- `npm run test:database`: passed, including existing Coexistence, webhook and
+  delivery regressions with the updated schema.
+- `npm run build`: passed.
+- Real headless Chromium, mobile viewport: corrected CSP allowed the mocked Meta
+  SDK, authorization completed once and confirmed account details rendered; no
+  JavaScript page errors. No reference-provider branding is present in the page.
+- SDK/login/Graph responses were mocked. Live Meta permission approval, consent
+  and real customer asset access were not tested; neither Railway deployment nor
+  a new APK/physical-phone run was performed. Meta Advanced Access and correct
+  provider configuration remain deployment prerequisites.
+
+## Production URL / full deploy-and-APK command — 13 October 2026
+
+The attached login screenshot shows the old local-backend error. Source tracing
+confirmed plain Flutter builds defaulted to http://127.0.0.1:3000 while production
+Android disallows cleartext HTTP. The configured Railway health endpoint returned
+HTTP 200 during diagnosis. The current APK could therefore fail independently of
+a healthy deployment when compiled manually without API_BASE_URL.
+
+The new default is the saved Railway HTTPS origin. The setup script refreshes
+backend_defaults.dart and GREETSYNC_DEPLOYMENT.json after health checks, keeps
+an explicit API_BASE_URL build argument, and uses RUN_PRODUCTION_SETUP.cmd for
+backend deploy plus a verified APK. SkipApkBuild remains an explicit backend-only
+option. The deploy check waits for the new backend release identifier; APK-only
+mode accepts the current healthy server. Version is 1.0.4+5. Cloud errors no longer
+show local adb instructions. Meta onboarding/discovery and original signing
+configuration remain included.
+
+Executed checks:
+
+- TypeScript check, 122 backend tests and production backend build passed.
+- 226 assertions across 24 mocked Windows setup workflows passed.
+- 26 production-backend assertions passed, including stale healthy deployments,
+  eventual new deployment, network failures, persisted domains, invalid origins
+  and preservation of other deployment settings.
+- 98 APK verifier/installer assertions passed using mocked native responses.
+- Real Dart 3.13.4 executed 20 configuration checks with default settings and 20
+  with an explicit staging override; all passed.
+- Flutter 3.47.5 source and Android SDK tools were prepared for a native build.
+  Automatic approval review blocked Flutter initialization because it attempted
+  a cloud metadata endpoint outside the authorized APK build scope. The block
+  was not bypassed. No local APK build, physical-phone install or live Meta
+  consent was completed. The source ZIP has no generated APK/private signing key.
+- No live Railway deployment or production database mutation was performed here.
+  The one-command script performs those steps on the user's configured PC and
+  preserves its signing identity.

@@ -1,0 +1,175 @@
+# Shared by the build and USB installer. Compatible with Windows PowerShell 5.1.
+function Invoke-GreetAndroidTool([string]$File, [string[]]$Arguments) {
+  $oldPreference = $ErrorActionPreference
+  $global:LASTEXITCODE = 0
+  try {
+    $ErrorActionPreference = 'Continue'
+    $lines = @(& $File @Arguments 2>&1 | ForEach-Object { $_.ToString() })
+    $code = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $oldPreference }
+  return [PSCustomObject]@{ ExitCode=$code; Output=($lines -join "`n") }
+}
+
+function Get-GreetAndroidSdk([string]$ProjectRoot) {
+  $candidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)
+  $properties = Join-Path $ProjectRoot 'mobile/android/local.properties'
+  if (Test-Path $properties) {
+    foreach ($line in Get-Content $properties) {
+      if ($line -match '^sdk\.dir=(.+)$') {
+        $candidates += $Matches[1].Replace('\:', ':').Replace('\\', '\')
+      }
+    }
+  }
+  if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path (Join-Path $candidate 'build-tools'))) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+  throw 'Android SDK not found. Set ANDROID_SDK_ROOT to the SDK shown by flutter doctor -v.'
+}
+
+function Get-GreetAndroidTools([string]$ProjectRoot) {
+  $sdk = Get-GreetAndroidSdk $ProjectRoot
+  $buildTools = @(Get-ChildItem (Join-Path $sdk 'build-tools') -Directory |
+    Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+    Sort-Object { [version]$_.Name } -Descending)
+  $selected = $null
+  foreach ($dir in $buildTools) {
+    if ((Test-Path (Join-Path $dir.FullName 'lib/apksigner.jar')) -and
+        ((Test-Path (Join-Path $dir.FullName 'aapt.exe')) -or (Test-Path (Join-Path $dir.FullName 'aapt')))) {
+      $selected = $dir.FullName; break
+    }
+  }
+  if (-not $selected) { throw 'Install a stable Android SDK Build-Tools version in Android Studio. APK signature/manifest verification is required.' }
+  $aapt = Join-Path $selected 'aapt.exe'
+  if (-not (Test-Path $aapt)) { $aapt = Join-Path $selected 'aapt' }
+  # Flutter may use Android Studio's JBR even if java is not on Windows PATH.
+  $java = ''
+  if (Get-Command flutter -ErrorAction SilentlyContinue) {
+    $doctor = Invoke-GreetAndroidTool 'flutter' @('doctor','-v')
+    if ($doctor.Output -match '(?m)Java binary at:\s*(.+)') {
+      $candidate = $Matches[1].Trim()
+      if (Test-Path -LiteralPath $candidate) { $java = $candidate }
+    }
+  }
+  if (-not $java -and $env:JAVA_HOME) {
+    foreach ($name in @('java.exe','java')) {
+      $candidate = Join-Path $env:JAVA_HOME "bin/$name"
+      if (Test-Path -LiteralPath $candidate) { $java = $candidate; break }
+    }
+  }
+  if (-not $java) {
+    $command = Get-Command java -ErrorAction SilentlyContinue
+    if ($command) { $java = $command.Source }
+  }
+  if (-not $java) { throw 'Java was not found. Configure the JDK used by Flutter (flutter doctor -v).' }
+  $adb = Join-Path $sdk 'platform-tools/adb.exe'
+  if (-not (Test-Path $adb)) { $adb = Join-Path $sdk 'platform-tools/adb' }
+  return [PSCustomObject]@{ Java=$java; SignerJar=(Join-Path $selected 'lib/apksigner.jar'); Aapt=$aapt; Adb=$adb }
+}
+
+function Assert-GreetApkArchive([string]$ApkPath) {
+  if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) { throw "APK not found: $ApkPath" }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = $null
+  try {
+    $zip = [IO.Compression.ZipFile]::OpenRead($ApkPath)
+    foreach ($required in @('AndroidManifest.xml','classes.dex','resources.arsc')) {
+      $entry = $zip.GetEntry($required)
+      if ($null -eq $entry -or $entry.Length -eq 0) { throw "Missing or empty APK entry: $required" }
+    }
+    # A universal Flutter APK must include the ARM libraries for phones.
+    foreach ($abi in @('arm64-v8a','armeabi-v7a')) {
+      foreach ($library in @('libapp.so','libflutter.so')) {
+        $entry = $zip.GetEntry("lib/$abi/$library")
+        if ($null -eq $entry -or $entry.Length -eq 0) { throw "Missing phone architecture library: $abi/$library" }
+      }
+    }
+  } catch { throw "The APK is incomplete or invalid: $($_.Exception.Message)" }
+  finally { if ($null -ne $zip) { $zip.Dispose() } }
+}
+
+function Read-GreetApkMetadata([string]$ApkPath, $Tools) {
+  $signature = Invoke-GreetAndroidTool $Tools.Java @('-jar',$Tools.SignerJar,'verify','--verbose','--print-certs',$ApkPath)
+  if ($signature.ExitCode -ne 0) { throw "Android APK signature verification failed. $($signature.Output)" }
+  $certificates = @([regex]::Matches($signature.Output, '(?im)^Signer #\d+ certificate SHA-256 digest:\s*([a-f0-9]{64})\s*$') |
+    ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() } | Sort-Object -Unique)
+  if ($certificates.Count -eq 0) { throw 'APK signer certificate was not reported by apksigner.' }
+  $badging = Invoke-GreetAndroidTool $Tools.Aapt @('dump','badging',$ApkPath)
+  if ($badging.ExitCode -ne 0) { throw "Android could not read the APK manifest. $($badging.Output)" }
+  if ($badging.Output -notmatch "(?m)^package: name='([^']+)' versionCode='(\d+)' versionName='([^']*)'") {
+    throw 'APK package/version metadata is missing.'
+  }
+  $package = $Matches[1]; $code = [long]$Matches[2]; $name = $Matches[3]
+  if ($package -ne 'com.aikyam.whatsappautomation') { throw "Unexpected APK package: $package" }
+  return [PSCustomObject]@{ Package=$package; VersionCode=$code; VersionName=$name; Signers=($certificates -join ','); SignatureOutput=$signature.Output }
+}
+
+function Test-GreetApk([string]$ApkPath, $Tools) {
+  Assert-GreetApkArchive $ApkPath
+  return Read-GreetApkMetadata $ApkPath $Tools
+}
+
+function Assert-GreetApkUpdate($New, $Old) {
+  if ($New.Signers -ne $Old.Signers) {
+    throw 'Signing certificate changed. Restore the ORIGINAL keystore used by the installed app in mobile/android/key.properties. No APK was replaced or app uninstalled.'
+  }
+  if ($New.VersionCode -lt $Old.VersionCode) {
+    throw "Version downgrade blocked: new $($New.VersionCode), existing $($Old.VersionCode). Increase the +build number in mobile/pubspec.yaml."
+  }
+}
+
+function Publish-GreetApk([string]$ProjectRoot, [string]$ApkPath, [string]$BackendUrl) {
+  $tools = Get-GreetAndroidTools $ProjectRoot
+  $new = Test-GreetApk $ApkPath $tools
+  $destination = Join-Path $ProjectRoot 'GreetSync-production.apk'
+  $pinPath = Join-Path $ProjectRoot '.android-signing/identity.json'
+  if (Test-Path $pinPath) {
+    $old = Get-Content -Raw $pinPath | ConvertFrom-Json
+    Assert-GreetApkUpdate $new $old
+  }
+  if (Test-Path $destination) {
+    # Preserve the original APK as an update baseline even on the first run.
+    $old = $null
+    try { $old = Read-GreetApkMetadata $destination $tools }
+    catch { Write-Warning 'The previous root APK could not be verified. The new APK must pass all checks.' }
+    if ($null -ne $old) { Assert-GreetApkUpdate $new $old }
+  }
+  $hash = (Get-FileHash -LiteralPath $ApkPath -Algorithm SHA256).Hash
+  $pending = Join-Path $ProjectRoot 'GreetSync-production.pending.apk'
+  try {
+    Copy-Item -LiteralPath $ApkPath -Destination $pending -Force
+    if ((Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash -ne $hash) { throw 'APK copy integrity check failed.' }
+    Move-Item -LiteralPath $pending -Destination $destination -Force
+  } finally { if (Test-Path $pending) { Remove-Item -LiteralPath $pending -Force } }
+  $null = New-Item -ItemType Directory -Path (Split-Path -Parent $pinPath) -Force
+  @{Signers=$new.Signers;VersionCode=$new.VersionCode} | ConvertTo-Json | Set-Content -Encoding UTF8 $pinPath
+  @"
+GreetSync verified Android APK
+File: GreetSync-production.apk
+Package: $($new.Package)
+Version: $($new.VersionName) (code $($new.VersionCode))
+Bytes: $((Get-Item -LiteralPath $destination).Length)
+SHA256: $hash
+Signer SHA256: $($new.Signers)
+Backend: $BackendUrl
+Checked: archive structure, ARM libraries, Android signature, manifest, copy hash.
+Transfer this complete APK. Never modify or re-zip a signed APK.
+An installed app can be updated only with its original signing key.
+If Android refuses installation, run INSTALL_ANDROID_USB.cmd for the exact error.
+"@ | Set-Content -Encoding UTF8 (Join-Path $ProjectRoot 'APK_BUILD_REPORT.txt')
+}
+
+function Get-GreetInstallAdvice([string]$Output) {
+  switch -Regex ($Output) {
+    'INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES' { return 'The installed app uses a different signing key. Restore its ORIGINAL keystore and rebuild. Keep the installed app/data; this script will not uninstall it.' }
+    'INSTALL_FAILED_VERSION_DOWNGRADE' { return 'Increase the +build number in mobile/pubspec.yaml above the installed version and rebuild.' }
+    'INSTALL_FAILED_NO_MATCHING_ABIS' { return 'The APK does not include this phone architecture. Build the universal APK using BUILD_APK_ONLY.cmd.' }
+    'INSTALL_FAILED_OLDER_SDK' { return 'This build requires Android 6.0 (API 23) or newer. Check the phone Android version.' }
+    'INSTALL_FAILED_INSUFFICIENT_STORAGE' { return 'Free storage on the phone, then retry installation.' }
+    'INSTALL_FAILED_USER_RESTRICTED|INSTALL_CANCELED_BY_USER' { return 'Allow USB installation on the phone and accept the installation prompt.' }
+    'INSTALL_PARSE_FAILED|INSTALL_FAILED_INVALID_APK|INSTALL_FAILED_BAD_SIGNATURE' { return 'Android rejected the APK contents/signature. Rebuild, transfer the complete verified APK, and compare its SHA256/byte count with APK_BUILD_REPORT.txt. Share this diagnostic if it continues.' }
+    default { return 'Share APK_INSTALL_DIAGNOSTIC.txt and the failing APK to identify the exact cause.' }
+  }
+}

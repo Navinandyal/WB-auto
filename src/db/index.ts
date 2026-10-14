@@ -178,6 +178,9 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS connection_status TEXT NOT NULL DEFAULT 'SAVED';
         ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS last_connection_error TEXT;
         ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS meta_business_id TEXT;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS waba_name TEXT;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS meta_business_name TEXT;
+        ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS business_profile JSONB;
         CREATE UNIQUE INDEX IF NOT EXISTS whatsapp_accounts_owner_user_unique_idx ON whatsapp_accounts(owner_user_id) WHERE owner_user_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS platform_meta_settings (
           id INTEGER PRIMARY KEY DEFAULT 1,
@@ -208,6 +211,8 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE meta_embedded_signup_sessions ADD COLUMN IF NOT EXISTS pending_access_token TEXT;
+        ALTER TABLE meta_embedded_signup_sessions ADD COLUMN IF NOT EXISTS selection_options JSONB;
         CREATE INDEX IF NOT EXISTS meta_embedded_signup_sessions_user_idx ON meta_embedded_signup_sessions(user_id);
         CREATE INDEX IF NOT EXISTS meta_embedded_signup_sessions_status_idx ON meta_embedded_signup_sessions(status);
         CREATE TABLE IF NOT EXISTS contacts (

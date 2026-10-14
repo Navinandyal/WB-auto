@@ -32,10 +32,10 @@ Flutter:
 cd mobile
 flutter clean
 flutter pub get
-flutter run -d <device-id>
+flutter run -d <device-id> --dart-define=API_BASE_URL=http://127.0.0.1:3000
 ```
 
-For the local physical-device backend URL, configure the API base URL as documented in `lib/core/app_config.dart`.
+Plain Flutter builds use the saved Railway HTTPS backend. The explicit override above is for local debug development; a USB Android phone also requires `adb reverse tcp:3000 tcp:3000`. For deploy plus a verified APK, run `RUN_PRODUCTION_SETUP.cmd` from the project root.
 
 ## Android build compatibility
 

@@ -69,6 +69,9 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
   connectionStatus: text('connection_status').default('SAVED').notNull(), // SAVED, CONNECTED, CONNECTION_ERROR
   lastConnectionError: text('last_connection_error'),
   metaBusinessId: text('meta_business_id'),
+  wabaName: text('waba_name'),
+  metaBusinessName: text('meta_business_name'),
+  businessProfile: jsonb('business_profile'),
   status: text('status').default('DISCONNECTED'), // legacy compatibility
   lastTestedAt: timestamp('last_tested_at'),
   createdAt: timestamp('created_at').defaultNow(),

@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-/// Android-native local notifications without an additional Flutter package.
+/// Android/iOS native local notifications without an additional Flutter package.
 ///
 /// GreetSync uses this for heads-up notifications when new backend notification
 /// rows arrive and for scheduled-message reminders that can appear while the
@@ -8,13 +8,15 @@ import 'package:flutter/services.dart';
 class NativeNotificationService {
   NativeNotificationService._();
 
-  static const MethodChannel _channel = MethodChannel('greetsync/notifications');
+  static const MethodChannel _channel = MethodChannel(
+    'greetsync/notifications',
+  );
 
   static Future<void> requestPermission() async {
     try {
       await _channel.invokeMethod<void>('requestPermission');
     } catch (_) {
-      // Keep the app usable on non-Android platforms and older Android builds.
+      // Keep the app usable when native notifications are unavailable.
     }
   }
 
@@ -45,6 +47,12 @@ class NativeNotificationService {
         'body': body,
         'epochMillis': when.millisecondsSinceEpoch,
       });
+    } catch (_) {}
+  }
+
+  static Future<void> syncSchedules(List<Map<String, dynamic>> items) async {
+    try {
+      await _channel.invokeMethod<void>('syncSchedules', {'items': items});
     } catch (_) {}
   }
 

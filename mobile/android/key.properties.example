@@ -1,0 +1,7 @@
+# Copy to key.properties ONLY when restoring/configuring the ORIGINAL key.
+# Paths are relative to mobile/android, or use an absolute path with / slashes.
+# Never commit/share the actual key.properties or keystore.
+storeFile=C:/Users/YOUR_WINDOWS_USER/.android/debug.keystore
+storePassword=android
+keyAlias=androiddebugkey
+keyPassword=android

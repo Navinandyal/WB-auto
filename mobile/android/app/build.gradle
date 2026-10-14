@@ -9,6 +9,22 @@ if (file("google-services.json").exists()) {
     apply plugin: "com.google.gms.google-services"
 }
 
+// Keep the original signing identity when updating an installed app. Never
+// silently fall back to a different key when the owner supplies key.properties.
+def ownerSigningFile = rootProject.file("key.properties")
+def ownerSigning = new Properties()
+if (ownerSigningFile.exists()) {
+    ownerSigningFile.withInputStream { ownerSigning.load(it) }
+    ["storeFile", "storePassword", "keyAlias", "keyPassword"].each { name ->
+        if (!ownerSigning.getProperty(name)?.trim()) {
+            throw new GradleException("Missing ${name} in android/key.properties")
+        }
+    }
+    if (!rootProject.file(ownerSigning.getProperty("storeFile")).isFile()) {
+        throw new GradleException("The keystore in android/key.properties does not exist. Restore the original signing key.")
+    }
+}
+
 android {
     namespace = "com.aikyam.whatsappautomation"
     compileSdk = flutter.compileSdkVersion
@@ -25,17 +41,28 @@ android {
 
     defaultConfig {
         applicationId = "com.aikyam.whatsappautomation"
-        minSdk = 23
+        minSdkVersion = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (ownerSigningFile.exists()) {
+            release {
+                storeFile = rootProject.file(ownerSigning.getProperty("storeFile"))
+                storePassword = ownerSigning.getProperty("storePassword")
+                keyAlias = ownerSigning.getProperty("keyAlias")
+                keyPassword = ownerSigning.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Development configuration. Replace with a production signing
-            // configuration before publishing to the Play Store.
-            signingConfig = signingConfigs.debug
+            // Preserve existing sideloaded builds on this PC. For a production
+            // key, provide key.properties pointing to the ORIGINAL keystore.
+            signingConfig = ownerSigningFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

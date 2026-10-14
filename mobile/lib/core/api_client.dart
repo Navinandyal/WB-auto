@@ -141,8 +141,11 @@ class ApiClient {
       if (e.type == DioExceptionType.connectionTimeout ||
           e.type == DioExceptionType.receiveTimeout ||
           e.type == DioExceptionType.connectionError) {
-        message =
-            'Cannot reach the GreetSync backend. Make sure the backend is running on port 3000 and, for a USB-connected Android phone, run: adb reverse tcp:3000 tcp:3000';
+        message = AppConfig.connectionErrorMessage(
+          backendUrl: e.requestOptions.baseUrl,
+          debug: kDebugMode,
+          timedOut: e.type != DioExceptionType.connectionError,
+        );
       } else if (e.response?.statusCode == 401 &&
           (data == null || data is! Map)) {
         message = 'Your session has expired. Please sign in again.';

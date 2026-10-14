@@ -14,6 +14,27 @@ mobile/android/local.properties
 .railway/
 GreetSync-production.apk
 PRODUCTION_DEPLOYMENT_INFO.txt
+APK_BUILD_REPORT.txt
+APK_INSTALL_DIAGNOSTIC.txt
+APK_VERIFICATION_DIAGNOSTIC.txt
+.android-signing/
+mobile/android/key.properties
+*.keystore
+*.jks
 
 # Firebase project configuration is supplied by the app owner.
 mobile/android/app/google-services.json
+
+# Per-Mac generated iOS settings, dependencies and signing output.
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/ios/Flutter/Generated.xcconfig
+mobile/ios/Flutter/flutter_export_environment.sh
+mobile/ios/Flutter/ephemeral/
+mobile/ios/Runner/GeneratedPluginRegistrant.*
+mobile/ios/Runner/GoogleService-Info.plist
+mobile/ios/ExportOptions.generated.plist
+mobile/ios_build_config.json
+mobile/.ios-*.tmp
+*.xcarchive
+*.ipa

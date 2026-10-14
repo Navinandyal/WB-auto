@@ -3,6 +3,8 @@ import '../core/push_notification_service.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import '../core/ios_reminders.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/native_notification_service.dart';
@@ -172,6 +174,12 @@ class _HomeShellState extends ConsumerState<HomeShell>
     List<Automation> automations,
   ) async {
     final now = DateTime.now();
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      await NativeNotificationService.syncSchedules(
+        iosReminderEntries(automations, now),
+      );
+      return;
+    }
     for (final automation in automations) {
       final nativeId = 200000 + automation.id;
       final scheduled = automation.scheduledAt.toLocal();

@@ -1,0 +1,6 @@
+// Set by PREPARE_IPHONE_MAC.command. No credentials belong in this file.
+GREETSYNC_BUNDLE_ID = com.aikyam.whatsappautomation
+GREETSYNC_TEAM_ID =
+GREETSYNC_PUSH_ENVIRONMENT = development
+GREETSYNC_ENTITLEMENTS_FILE = Runner/Runner.entitlements
+GREETSYNC_BACKEND_MODE = https

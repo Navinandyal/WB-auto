@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -118,7 +118,7 @@ class _MetaEmbeddedSignupScreenState
     });
     try {
       bool opened = false;
-      if (Platform.isAndroid) {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
         try {
           await _browserChannel.invokeMethod<bool>('openChrome', {'url': raw});
           opened = true;
@@ -134,7 +134,7 @@ class _MetaEmbeddedSignupScreenState
       }
       if (!opened) {
         throw ApiException(
-          'Could not open Meta Embedded Signup. Install or enable Google Chrome and try again.',
+          'Could not open Meta Embedded Signup. Enable your default browser and try again.',
         );
       }
       if (!mounted) return;
