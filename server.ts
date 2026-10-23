@@ -1,4 +1,4 @@
-import {compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
+import {templateListSelect,compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
 import { createPasswordResetHandlers } from './src/server/password-reset.ts';
 import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
 import { contactName } from './src/server/contact-name.ts';
@@ -2842,14 +2842,16 @@ app.get('/api/template-suggestions', requireAuth, async (req:AuthRequest,res)=>{
   } catch(e:any){res.status(500).json({error:e.message||'Failed to load template suggestions.'});}
 });
 
+// Lists carry message metadata; media is fetched for one opened template.
+
 // GET message templates
 const getTemplatesHandler = async (req: AuthRequest, res: any) => {
   try {
     if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected.' });
     if (req.user?.role === 'admin') {
-      return res.json(await db.select().from(messageTemplates).orderBy(desc(messageTemplates.updatedAt)));
+      return res.json(await db.select(templateListSelect).from(messageTemplates).orderBy(desc(messageTemplates.updatedAt)));
     }
-    const list = await db.select().from(messageTemplates).where(eq(messageTemplates.ownerUserId, req.user!.id)).orderBy(desc(messageTemplates.updatedAt));
+    const list = await db.select(templateListSelect).from(messageTemplates).where(eq(messageTemplates.ownerUserId, req.user!.id)).orderBy(desc(messageTemplates.updatedAt));
     // Approved templates are shown only when they are tied to a real Meta template id for this business. Local DRAFT/PENDING/REJECTED rows remain visible.
     // DELETED is an internal archive state used when message history still references a template.
     res.json(list.filter((row:any) => {
@@ -2864,6 +2866,18 @@ app.get('/api/whatsapp/templates', requireAuth, getTemplatesHandler);
 app.get('/api/templates', requireAuth, getTemplatesHandler);
 
 // SYNC templates from the logged-in business user's Meta account.
+app.get('/api/whatsapp/templates/:id', requireAuth, async (req: AuthRequest, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({error:'Invalid template ID.'});
+  try {
+    const scope = req.user?.role === 'admin' ? eq(messageTemplates.id,id) : and(eq(messageTemplates.id,id),eq(messageTemplates.ownerUserId,req.user!.id));
+    const [row] = await db.select().from(messageTemplates).where(scope).limit(1);
+    if (!row) return res.status(404).json({error:'Template not found.'});
+    res.set('Cache-Control','private, no-store');
+    return res.json(row);
+  } catch (_) { return res.status(503).json({error:'Unable to load this template. Please retry.'}); }
+});
+
 app.post('/api/whatsapp/templates/sync', requireAuth, requireActiveBusinessPackage, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Template sync is performed from a business account.' });
@@ -3267,7 +3281,7 @@ const automationSelect = {
   templateName: messageTemplates.name,
   templateLanguage: messageTemplates.language,
   templateStatus: messageTemplates.status,
-  templateComponents: messageTemplates.components,
+  templateComponents: sql`CASE WHEN ${automations.templateSnapshot} IS NOT NULL THEN '[]'::jsonb ELSE ${compactComponents(messageTemplates.components)} END`,
 };
 
 // Small status-only reads never fetch message/template/media bodies.
@@ -3310,7 +3324,7 @@ app.get('/api/automations/:id', requireAuth, async (req: AuthRequest, res) => {
     const condition = req.user?.role === 'admin'
       ? eq(automations.id, id)
       : and(eq(automations.id, id), eq(automations.ownerUserId, req.user!.id));
-    const [item] = await db.select(automationSelect).from(automations)
+    const [item] = await db.select({...automationSelect, templateSnapshot: automations.templateSnapshot, templateComponents: messageTemplates.components}).from(automations)
       .innerJoin(contacts, eq(automations.contactId, contacts.id))
       .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
       .where(condition).limit(1);
@@ -3735,7 +3749,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-scheduled-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-display-20261024',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});

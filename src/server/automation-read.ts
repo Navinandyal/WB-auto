@@ -1,4 +1,5 @@
-import {sql, type SQLWrapper} from 'drizzle-orm';
+import {messageTemplates} from '../db/schema.ts';
+import {getTableColumns, sql, type SQLWrapper} from 'drizzle-orm';
 // Project in PostgreSQL: removing bytes after fetching would not reduce pooler egress.
 export function compactComponents(column:SQLWrapper){
  return sql`COALESCE((SELECT jsonb_agg(part.value - 'greetsync_media_preview' ORDER BY part.ordinality) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${column})='array' THEN ${column} ELSE '[]'::jsonb END) WITH ORDINALITY AS part(value,ordinality)), '[]'::jsonb)`;
@@ -16,3 +17,5 @@ export async function readAutomationStatuses(database:{query:(...args:any[])=>Pr
  if(!ids.length||ids.length>500||ids.some(id=>!Number.isSafeInteger(id)||id<=0))throw Object.assign(new Error('Provide 1-500 valid message IDs.'),{statusCode:400});
  return (await database.query('SELECT id,status,executed_at AS "executedAt",error_message AS "errorMessage",updated_at AS "updatedAt" FROM automations WHERE id=ANY($1::int[]) AND ($2::int IS NULL OR owner_user_id=$2)',[ids,owner])).rows;
 }
+
+export const templateListSelect = {...getTableColumns(messageTemplates),components:compactComponents(messageTemplates.components)};
