@@ -1,3 +1,4 @@
+import { createPasswordResetHandlers } from './src/server/password-reset.ts';
 import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
 import { contactName } from './src/server/contact-name.ts';
 import { importGroupName, attachImportedGroup } from './src/server/contact-import-group.ts';
@@ -27,7 +28,7 @@ import express from 'express';
 import { randomBytes, randomInt, createHash, createHmac, timingSafeEqual } from 'crypto';
 import path from 'path';
 import { promises as dns } from 'node:dns';
-import { db, initDatabaseSchema, isDatabaseConnected, pool } from './src/db/index.ts';
+import { db, initDatabaseSchema, isDatabaseConnected, pool, checkDatabaseConnection } from './src/db/index.ts';
 import { localStore } from './src/db/localStore.ts';
 import {
   users,
@@ -72,6 +73,12 @@ if (!Number.isFinite(PORT) || PORT <= 0) {
 }
 
 app.use(express.json({ limit: '30mb', verify: (req:any,_res,buffer) => { req.rawBody=Buffer.from(buffer); } }));
+
+// Database outages are availability failures, never invalid-password failures.
+app.use('/api/auth', async (_req, res, next) => {
+  if (!await checkDatabaseConnection()) return res.status(503).json({code:'DATABASE_UNAVAILABLE',error:'The database is temporarily unavailable. Your password was not checked. Please try again shortly.'});
+  next();
+});
 
 // Wake requests never force/replay messages: the normal worker uses existing
 // durable job claims and due dates after startup. No user payload is trusted.
@@ -469,7 +476,7 @@ async function mobileLoginHandler(req: any, res: any) {
     res.json({ success: true, accessToken, refreshToken, token: accessToken, expiresIn: 900, rememberMe, user, whatsappConnection });
   } catch (err: any) {
     console.error('Mobile login error:', err);
-    res.status(500).json({ error: 'Failed to authenticate user.' });
+    res.status(503).json({ code: 'AUTH_SERVICE_UNAVAILABLE', error: 'Sign-in could not finish. Please try again shortly; this is not an invalid-password response.' });
   }
 }
 app.post('/api/auth/login', mobileLoginHandler);
@@ -574,133 +581,11 @@ app.post('/api/auth/logout', async (req, res) => {
 
 
 // Password recovery. Mobile number or registered email may be used to request a short-lived code.
-app.post('/api/auth/forgot-password', async (req, res) => {
-  try {
-    if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected.' });
-
-    const identifier = String(req.body?.identifier || '').trim();
-    if (!identifier) return res.status(400).json({ error: 'Enter your registered mobile number or email.' });
-
-    let account: any | undefined;
-    if (identifier.includes('@')) {
-      const [row] = await db.select().from(users).where(sql`lower(${users.email}) = lower(${identifier})`).limit(1);
-      account = row;
-    } else {
-      const phone = normalizeLoginPhone(identifier);
-      if (!phone) return res.status(400).json({ error: 'Enter a valid mobile number.' });
-      const [row] = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
-      account = row;
-    }
-
-    if (!account) return res.status(404).json({ error: 'No account was found for that mobile number or email.' });
-    if (!account.isActive) return res.status(403).json({ error: 'This account is disabled. Contact the administrator.' });
-
-    const resetId = randomBytes(24).toString('hex');
-    const code = String(randomInt(100000, 1000000));
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-
-    await db.insert(passwordResetRequests).values({
-      resetId,
-      userId: account.id,
-      codeHash: hashPassword(code),
-      expiresAt,
-    });
-
-    await db.insert(auditLogs).values({
-      action: 'PASSWORD_RESET_REQUESTED',
-      actor: account.phone || account.email,
-      details: { userId: account.id },
-    });
-
-    // This project currently has no SMS/email delivery provider. For local development,
-    // return the verification code so the complete reset flow can be tested end-to-end.
-    // Production intentionally omits it; connect an SMS/email sender before deployment.
-    res.json({
-      success: true,
-      resetId,
-      expiresInSeconds: 900,
-      message: 'Verification code generated. It expires in 15 minutes.',
-      ...(process.env.NODE_ENV === 'production' ? {} : { verificationCode: code }),
-    });
-  } catch (err: any) {
-    console.error('Forgot password error:', err);
-    res.status(500).json({ error: 'Unable to start password reset.' });
-  }
-});
-
-app.post('/api/auth/reset-password', async (req, res) => {
-  try {
-    if (!isDatabaseConnected) return res.status(503).json({ error: 'Database is not connected.' });
-
-    const resetId = String(req.body?.resetId || '').trim();
-    const code = String(req.body?.code || '').trim();
-    const newPassword = String(req.body?.newPassword || '');
-
-    if (!resetId || !/^\d{6}$/.test(code)) {
-      return res.status(400).json({ error: 'Enter the valid 6-digit verification code.' });
-    }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
-    }
-
-    const [request] = await db
-      .select()
-      .from(passwordResetRequests)
-      .where(and(
-        eq(passwordResetRequests.resetId, resetId),
-        isNull(passwordResetRequests.usedAt),
-        gt(passwordResetRequests.expiresAt, new Date()),
-      ))
-      .limit(1);
-
-    if (!request || !verifyPassword(code, request.codeHash)) {
-      return res.status(400).json({ error: 'The verification code is invalid or has expired.' });
-    }
-
-    await db.update(users).set({ passwordHash: hashPassword(newPassword) }).where(eq(users.id, request.userId));
-    await db.update(passwordResetRequests).set({ usedAt: new Date() }).where(eq(passwordResetRequests.id, request.id));
-
-    await db.insert(auditLogs).values({
-      action: 'PASSWORD_RESET_COMPLETED',
-      actor: `user:${request.userId}`,
-      details: { userId: request.userId },
-    });
-
-    res.json({ success: true, message: 'Password reset successfully.' });
-  } catch (err: any) {
-    console.error('Reset password error:', err);
-    res.status(500).json({ error: 'Unable to reset password.' });
-  }
-});
-
-
-// Production endpoint aliases used by the Flutter client.
-app.post('/api/auth/forgot-password/request', async (req, res) => {
-  try {
-    const phone = normalizeLoginPhone(req.body?.mobile || req.body?.phone || '');
-    if (!phone) return res.status(400).json({ error: 'Enter a valid mobile number.' });
-    const [account] = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
-    if (!account) return res.status(404).json({ error: 'Mobile number not found.' });
-    const resetId = randomBytes(24).toString('hex'); const code = String(randomInt(100000, 1000000));
-    await db.insert(passwordResetRequests).values({ resetId, userId: account.id, codeHash: hashPassword(code), expiresAt: new Date(Date.now() + 15*60*1000) });
-    res.json({ success: true, resetId, message: 'Reset code sent.', ...(process.env.NODE_ENV === 'production' ? {} : { verificationCode: code }) });
-  } catch { res.status(500).json({ error: 'Unable to start password reset.' }); }
-});
-app.post('/api/auth/forgot-password/reset', async (req, res) => {
-  try {
-    const resetId=String(req.body?.resetId||'').trim(), code=String(req.body?.code||req.body?.otp||'').trim(), newPassword=String(req.body?.newPassword||'');
-    if(!/^\d{6}$/.test(code)) return res.status(400).json({error:'Invalid reset code.'});
-    if(newPassword.length<8) return res.status(400).json({error:'Password must be at least 8 characters.'});
-    const [r]=await db.select().from(passwordResetRequests).where(and(eq(passwordResetRequests.resetId,resetId),isNull(passwordResetRequests.usedAt))).limit(1);
-    if(!r) return res.status(400).json({error:'Invalid reset code.'});
-    if(r.expiresAt <= new Date()) return res.status(400).json({error:'Reset code expired.'});
-    if(!verifyPassword(code,r.codeHash)) return res.status(400).json({error:'Invalid reset code.'});
-    await db.update(users).set({passwordHash:hashPassword(newPassword)}).where(eq(users.id,r.userId));
-    await db.update(passwordResetRequests).set({usedAt:new Date()}).where(eq(passwordResetRequests.id,r.id));
-    await db.update(refreshSessions).set({revokedAt:new Date()}).where(and(eq(refreshSessions.userId,r.userId),isNull(refreshSessions.revokedAt)));
-    res.json({success:true,message:'Password reset successfully.'});
-  } catch { res.status(500).json({error:'Unable to reset password.'}); }
-});
+const passwordResetHandlers = createPasswordResetHandlers(pool);
+app.post('/api/auth/forgot-password', passwordResetHandlers.request);
+app.post('/api/auth/forgot-password/request', passwordResetHandlers.request);
+app.post('/api/auth/reset-password', passwordResetHandlers.reset);
+app.post('/api/auth/forgot-password/reset', passwordResetHandlers.reset);
 
 app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -3822,9 +3707,9 @@ for (const slug of ['privacy-policy', 'terms-and-conditions']) {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    await pool.query('SELECT 1');
+    if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-free-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-auth-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});

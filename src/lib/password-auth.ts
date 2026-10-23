@@ -50,6 +50,7 @@ export function verifyPassword(password: string, storedHash: string | null | und
     // legacy compatibility for earlier GreetSync builds
     salt = parts[0]; expectedHex = parts[1];
   } else return false;
+  if (!salt || !/^(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{128})$/.test(expectedHex)) return false;
   try {
     const expected = Buffer.from(expectedHex, 'hex');
     const actual = scryptSync(password, salt, expected.length);

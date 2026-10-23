@@ -41,8 +41,8 @@ export const createPool = () => {
       global._postgresPool = new Pool({
         connectionString,
         ssl: isLocal || sslDisabled ? false : { rejectUnauthorized: false },
-        max: 10,
-        connectionTimeoutMillis: 10000,
+        max: 4,
+        connectionTimeoutMillis: 20000,
         idleTimeoutMillis: 30000,
       });
     } else {
@@ -85,6 +85,14 @@ export const createPool = () => {
 export const pool = createPool();
 
 export const db = drizzle(pool, { schema });
+
+// A failed idle socket is not permanent database unavailability. Probe on the
+// next auth/health request; never rerun schema DDL or seed users to reconnect.
+export async function checkDatabaseConnection(): Promise<boolean> {
+  try { await pool.query({text:'SELECT 1',query_timeout:10000} as any); isDatabaseConnected=true; return true; }
+  catch { isDatabaseConnected=false; return false; }
+}
+
 
 /**
  * Automatically ensures all required tables exist when starting up.
@@ -140,6 +148,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           used_at TIMESTAMP,
           created_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE password_reset_requests ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS password_reset_requests_user_idx ON password_reset_requests(user_id);
         CREATE TABLE IF NOT EXISTS refresh_sessions (
           id SERIAL PRIMARY KEY,

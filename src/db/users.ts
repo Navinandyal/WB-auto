@@ -25,10 +25,10 @@ export const FIXED_ADMIN_PASSWORD = 'Admin@12345';
 export const FIXED_ADMIN_NAME = 'System Administrator';
 export const FIXED_ADMIN_EMAIL = 'admin@greetsync.local';
 
-export async function ensureFixedAdminUser() {
-  if (!isDatabaseConnected) return null;
+export async function ensureFixedAdminUser(store: any = db, connected = isDatabaseConnected) {
+  if (!connected) return null;
 
-  // The platform administrator is intentionally fixed. WhatsApp/business
+  // Preserve an existing administrator password across restarts. WhatsApp/business
   // automation credentials are NOT stored here and are never shared globally.
   const phone = normalizeLoginPhone(FIXED_ADMIN_MOBILE);
   const password = FIXED_ADMIN_PASSWORD;
@@ -37,37 +37,37 @@ export async function ensureFixedAdminUser() {
   const uid = 'fixed_admin';
 
   if (!phone) throw new Error('Fixed administrator mobile number is invalid.');
-  const byUid = await db.select().from(users).where(eq(users.uid, uid)).limit(1);
+  const byUid = await store.select().from(users).where(eq(users.uid, uid)).limit(1);
   const passwordHash = hashPassword(password);
 
   if (byUid[0]) {
-    const updated = await db.update(users).set({
+    const updated = await store.update(users).set({
       phone,
       email,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',
       approvedAt: new Date(),
-      passwordHash,
+      passwordHash: byUid[0].passwordHash || passwordHash,
     }).where(eq(users.id, byUid[0].id)).returning();
     return updated[0];
   }
 
-  const byPhone = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
+  const byPhone = await store.select().from(users).where(eq(users.phone, phone)).limit(1);
   if (byPhone[0]) {
-    const updated = await db.update(users).set({
+    const updated = await store.update(users).set({
       uid,
       email,
       role: 'admin',
       isActive: true,
       approvalStatus: 'ACTIVE',
       approvedAt: new Date(),
-      passwordHash,
+      passwordHash: byPhone[0].passwordHash || passwordHash,
     }).where(eq(users.id, byPhone[0].id)).returning();
     return updated[0];
   }
 
-  const inserted = await db.insert(users).values({
+  const inserted = await store.insert(users).values({
     uid,
     email,
     phone,
