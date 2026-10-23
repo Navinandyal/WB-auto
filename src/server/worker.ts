@@ -1,9 +1,10 @@
+import {compactComponents} from './automation-read.ts';
 import { sendRetryPlan } from './send-retry.ts';
 import { marketingRetryAfter, marketingLimitMessage } from './marketing-limits.ts';
 import { prepareDeliveryTracking } from './delivery-setup.ts';
 import { acceptanceVariables } from './message-acceptance.ts';
 import { semanticComponents, previewSnapshot } from './template-rules.ts';
-import { and, eq, lte, gte, asc, isNull, or } from 'drizzle-orm';
+import { getTableColumns, and, eq, lte, gte, asc, isNull, or } from 'drizzle-orm';
 import { db as defaultDb, isDatabaseConnected, pool } from '../db/index.ts';
 import {
   automations,
@@ -159,7 +160,7 @@ export class AutomationWorker {
       .select({
         automation: automations,
         contact: contacts,
-        template: messageTemplates,
+        template: {...getTableColumns(messageTemplates),components:compactComponents(messageTemplates.components)},
       })
       .from(automations)
       .innerJoin(contacts, eq(automations.contactId, contacts.id))

@@ -501,7 +501,8 @@ export class WishflowService {
     let allAutomations: any[] = [];
     if (isDatabaseConnected) {
       try {
-        allAutomations = ownerUserId ? await db.select().from(automations).where(eq(automations.ownerUserId, ownerUserId)) : await db.select().from(automations);
+        const summary=db.select({id:automations.id,contactId:automations.contactId,templateId:automations.templateId,variables:automations.variables,scheduledAt:automations.scheduledAt,status:automations.status}).from(automations);
+        allAutomations = ownerUserId?await summary.where(eq(automations.ownerUserId,ownerUserId)):await summary;
       } catch {
         allAutomations = localStore.automations;
       }
@@ -513,7 +514,8 @@ export class WishflowService {
     let allTemplates: any[] = [];
     if (isDatabaseConnected) {
       try {
-        allTemplates = await db.select().from(messageTemplates);
+        const lookup=db.select({id:messageTemplates.id,name:messageTemplates.name}).from(messageTemplates);
+        allTemplates = ownerUserId?await lookup.where(eq(messageTemplates.ownerUserId,ownerUserId)):await lookup;
       } catch {
         allTemplates = localStore.templates;
       }

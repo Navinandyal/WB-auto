@@ -1,3 +1,4 @@
+import {compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
 import { createPasswordResetHandlers } from './src/server/password-reset.ts';
 import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
 import { contactName } from './src/server/contact-name.ts';
@@ -1374,7 +1375,7 @@ app.get('/api/dashboard/stats', requireAuth, async (req: AuthRequest, res) => {
         variables: automations.variables, executedAt: automations.executedAt, errorMessage: automations.errorMessage,
         contactName: contacts.name, contactPhone: contacts.phone, contactOptIn: contacts.optIn,
         templateName: messageTemplates.name, templateLanguage: messageTemplates.language, templateStatus: messageTemplates.status,
-        templateComponents: messageTemplates.components,
+        templateComponents: sql`CASE WHEN ${automations.templateSnapshot} IS NOT NULL THEN '[]'::jsonb ELSE ${compactComponents(messageTemplates.components)} END`,
       }).from(automations)
         .innerJoin(contacts, eq(automations.contactId, contacts.id))
         .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
@@ -3255,7 +3256,7 @@ const automationSelect = {
   scheduledAt: automations.scheduledAt,
   timezone: automations.timezone,
   status: automations.status,
-  templateSnapshot: automations.templateSnapshot,
+  templateSnapshot: compactSnapshot(automations.templateSnapshot),
   sendRequestId: automations.sendRequestId,
   executedAt: automations.executedAt,
   errorMessage: automations.errorMessage,
@@ -3269,14 +3270,23 @@ const automationSelect = {
   templateComponents: messageTemplates.components,
 };
 
+// Small status-only reads never fetch message/template/media bodies.
+app.get('/api/automation-statuses',requireAuth,async(req:AuthRequest,res)=>{
+ try{
+  const owner=req.user!.role==='admin'?null:req.user!.id;
+  const rows=await readAutomationStatuses(pool,owner,req.query.ids);
+  res.set('Cache-Control','private, no-store');res.json(rows);
+ }catch(error:any){res.status(error.statusCode===400?400:503).json({error:error.statusCode===400?error.message:'Message status is temporarily unavailable.'});}
+});
+
 app.get('/api/automations', requireAuth, async (req: AuthRequest, res) => {
   try {
     const base = db.select(automationSelect).from(automations)
       .innerJoin(contacts, eq(automations.contactId, contacts.id))
       .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id));
     const list = req.user?.role === 'admin'
-      ? await base.orderBy(desc(automations.scheduledAt))
-      : await base.where(eq(automations.ownerUserId, req.user!.id)).orderBy(desc(automations.scheduledAt));
+      ? await base.orderBy(desc(automations.createdAt), desc(automations.id))
+      : await base.where(eq(automations.ownerUserId, req.user!.id)).orderBy(desc(automations.createdAt), desc(automations.id));
     res.json(list);
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to load automations.' });
@@ -3359,7 +3369,8 @@ app.post('/api/automations', requireAuth, requireActiveBusinessPackage, async (r
       entityType: 'AUTOMATION',
       entityId: created[0]?.id || null,
     });
-    res.status(201).json({success:true,count:created.length,automations:created,automation:created[0]||null});
+    const confirmed=confirmedAutomationRows(created,template,selectedContacts);
+    res.status(201).json({success:true,count:created.length,automations:confirmed,automation:confirmed[0]||null});
   } catch(err:any){sendRuleError(res,err,'Failed to schedule automation.');}
 });
 
@@ -3465,7 +3476,11 @@ const sendNowHandler=async(req:AuthRequest,res:any)=>{
     results.push(...await enqueueSendNowBatch(db,userId,requestId,template,ready,
       (count,tx)=>assertMessageCapacity(userId,count,{reserveScheduled:true,scheduledAt:new Date()},tx)));
     // A normal worker poll executes these durable jobs even after the app closes.
-    res.status(202).json({success:true,requestId,total:results.length,queued:results.filter(r=>r.status==='SCHEDULED').length,
+    const committedIds=results.map(row=>row.automationId).filter((id:any)=>Number.isInteger(id));
+    const confirmed=committedIds.length?await db.select(automationSelect).from(automations)
+      .innerJoin(contacts,eq(automations.contactId,contacts.id)).innerJoin(messageTemplates,eq(automations.templateId,messageTemplates.id))
+      .where(and(eq(automations.ownerUserId,userId),inArray(automations.id,committedIds))):[];
+    res.status(202).json({success:true,requestId,automations:confirmed,total:results.length,queued:results.filter(r=>r.status==='SCHEDULED').length,
       sent:results.filter(r=>['SENT','DELIVERED','READ'].includes(r.status)).length,failed:results.filter(r=>r.status==='FAILED').length,
       accepted:results.filter(r=>r.status==='ACCEPTED').length,processing:results.filter(r=>r.status==='PROCESSING').length,
       skipped:results.filter(r=>r.status==='SKIPPED').length,results});
@@ -3720,7 +3735,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-data-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-scheduled-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});
