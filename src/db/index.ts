@@ -1,3 +1,4 @@
+import {hasPreparedSchema} from './prepared-schema.ts';
 import { protectSupabaseTables } from '../server/supabase-access.ts';
 // Database pool and Drizzle client initialization
 import * as dotenv from 'dotenv';
@@ -16,6 +17,7 @@ const { Pool } = pg;
 
 // Connection health tracking for resilient local fallback
 export let isDatabaseConnected = false;
+export function markDatabaseAvailable() { isDatabaseConnected = true; }
 
 // Add global connection pool caching to persist across hot-reloads
 declare global {
@@ -102,6 +104,11 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
   try {
     const client = await pool.connect();
     try {
+      if(await hasPreparedSchema(client)){
+        isDatabaseConnected=true;
+        console.log('[Database] Prepared schema verified; startup DDL skipped.');
+        return true;
+      }
       await client.query(`
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
@@ -445,6 +452,8 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           id TEXT PRIMARY KEY, backup_sha256 TEXT NOT NULL, target_fingerprint TEXT NOT NULL,
           row_counts JSONB NOT NULL DEFAULT '{}'::jsonb, completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`);
+        await client.query('ALTER TABLE public.greetsync_deployment_migrations ADD COLUMN IF NOT EXISTS schema_version TEXT');
+        await client.query('CREATE INDEX IF NOT EXISTS contacts_owner_name_idx ON public.contacts(owner_user_id,name,id)');
         await protectSupabaseTables(client);
       }
       isDatabaseConnected = true;
@@ -464,7 +473,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         '  Production startup and scheduled sending remain stopped until the database is reachable.\n'
       );
     } else {
-      console.warn('[Database Note] PostgreSQL is offline or unreachable:', msg);
+      console.warn('[Database Note] Schema initialization failed:', msg);
     }
     return false;
   }

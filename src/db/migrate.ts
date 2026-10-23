@@ -1,3 +1,4 @@
+import {markPreparedSchema} from './prepared-schema.ts';
 import 'dotenv/config';
 import { initDatabaseSchema, pool } from './index.ts';
 import { ensureFixedAdminUser } from './users.ts';
@@ -9,6 +10,7 @@ export async function runMigration(): Promise<void> {
   }
 
   await ensureFixedAdminUser();
+  await markPreparedSchema(pool);
   console.log('[Database] GreetSync schema is ready.');
 }
 

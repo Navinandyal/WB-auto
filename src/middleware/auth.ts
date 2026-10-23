@@ -1,4 +1,4 @@
-import { db } from '../db/index.ts';
+import { db, markDatabaseAvailable } from '../db/index.ts';
 import { users } from '../db/schema.ts';
 import { eq } from 'drizzle-orm';
 import { Request, Response, NextFunction } from 'express';
@@ -24,6 +24,7 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
 
   try {
     const [account]=await db.select({isActive:users.isActive,status:users.approvalStatus}).from(users).where(eq(users.id,user.id)).limit(1);
+    markDatabaseAvailable();
     if(!account)return res.status(401).json({error:'Account unavailable.'});
     const readStatus=['/api/account/status','/api/auth/me','/api/notifications'].includes(req.path) && req.method==='GET';
     const unregister=req.path==='/api/push/devices' && req.method==='DELETE';

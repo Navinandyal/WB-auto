@@ -67,6 +67,17 @@ import {
 } from './src/server/subscriptions.ts';
 
 const app = express();
+// Correlate failed phone requests with Render logs without logging credentials,
+// query strings, contacts, template contents or reset codes.
+app.use((req, res, next) => {
+  const reference = randomBytes(8).toString('hex');
+  res.setHeader('X-GreetSync-Request-ID', reference);
+  const started = Date.now();
+  res.on('finish', () => {
+    if (res.statusCode >= 500) console.warn('[API]', JSON.stringify({reference,method:req.method,path:req.route?.path || 'unmatched',status:res.statusCode,durationMs:Date.now()-started}));
+  });
+  next();
+});
 const PORT = Number(process.env.PORT || 3000);
 if (!Number.isFinite(PORT) || PORT <= 0) {
   throw new Error('Invalid PORT environment variable.');
@@ -3709,7 +3720,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-auth-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-data-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});
