@@ -1,3 +1,4 @@
+import '../core/delivery_error.dart';
 import 'dart:async';
 import '../widgets/whatsapp_message_preview.dart';
 
@@ -45,6 +46,7 @@ class _AutomationsScreenState extends ConsumerState<AutomationsScreen>
     if (list == null ||
         !list.any(
           (item) => [
+            'SCHEDULED',
             'ACCEPTED',
             'PROCESSING',
             'SENT',
@@ -798,7 +800,8 @@ class _AutomationDetailsScreenState
                             ).format(item.executedAt!.toLocal()),
                           ),
                         if (item.errorMessage != null &&
-                            item.errorMessage!.isNotEmpty)
+                            item.errorMessage!.isNotEmpty &&
+                            diagnosis is! Map)
                           _info('Error', item.errorMessage!),
                       ],
                     ),
@@ -844,6 +847,13 @@ class _AutomationDetailsScreenState
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w800,
                                 ),
+                              ),
+                            ),
+                          if (diagnosis['retryAfter'] != null)
+                            Text(
+                              'Try after: ${DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.parse('${diagnosis['retryAfter']}').toLocal())}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           if (diagnosis['messageId'] != null)
@@ -961,8 +971,9 @@ class _AutomationDetailsScreenState
                       ],
                     ),
                   ),
-                if (item.status == 'FAILED' ||
-                    ['ACCEPTED', 'SENT'].contains(item.status)) ...[
+                if ((item.status == 'FAILED' ||
+                        ['ACCEPTED', 'SENT'].contains(item.status)) &&
+                    !(diagnosis is Map && diagnosis['canRetry'] == false)) ...[
                   const SizedBox(height: 12),
                   OutlinedButton.icon(
                     onPressed: () => _sendAgain(item),
@@ -1027,7 +1038,7 @@ class _AutomationDetailsScreenState
   Widget _messageRecord(Map<String, dynamic> record) {
     final status = (record['status'] ?? '').toString();
     final content = (record['content'] ?? '').toString().trim();
-    final error = (record['errorMessage'] ?? '').toString().trim();
+    final error = deliveryError(record['errorMessage'], record['errorCode']);
     final wamid = (record['whatsappMessageId'] ?? '').toString().trim();
     final variables = record['variables'];
 
@@ -1250,6 +1261,9 @@ class _AutomationDetailsScreenState
         ..removeWhere(
           (key, _) => [
             '__retry_of',
+            '__marketing_retry_after',
+            '__send_retry_count',
+            '__send_retry_reason',
             '__meta_message_status',
             '__delivery_note',
             '__delivery_tracking_warning',

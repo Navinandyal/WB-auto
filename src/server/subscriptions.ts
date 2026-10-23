@@ -2,6 +2,8 @@ import { and, count, desc, eq, gt, gte, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import { automations, contacts, messages, subscriptionPackages, userSubscriptions } from '../db/schema.ts';
 
+type SubscriptionDatabase = Pick<typeof db, 'select' | 'update'>;
+
 export type PackageAccessSummary = {
   active: boolean;
   activeBase: any | null;
@@ -40,18 +42,18 @@ function normalizePackage(row: any) {
   };
 }
 
-export async function expireOldSubscriptions(userId?: number) {
+export async function expireOldSubscriptions(userId?: number, database: SubscriptionDatabase = db) {
   const now = new Date();
   const condition = userId
     ? and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, 'ACTIVE'), lte(userSubscriptions.endsAt, now))
     : and(eq(userSubscriptions.status, 'ACTIVE'), lte(userSubscriptions.endsAt, now));
-  await db.update(userSubscriptions).set({ status: 'EXPIRED', updatedAt: now }).where(condition as any);
+  await database.update(userSubscriptions).set({ status: 'EXPIRED', updatedAt: now }).where(condition as any);
 }
 
-export async function getPackageAccessSummary(userId: number): Promise<PackageAccessSummary> {
-  await expireOldSubscriptions(userId);
+export async function getPackageAccessSummary(userId: number, database: SubscriptionDatabase = db): Promise<PackageAccessSummary> {
+  await expireOldSubscriptions(userId, database);
   const now = new Date();
-  const rows = await db.select({
+  const rows = await database.select({
     subscriptionId: userSubscriptions.id,
     packageId: subscriptionPackages.id,
     status: userSubscriptions.status,
@@ -80,8 +82,8 @@ export async function getPackageAccessSummary(userId: number): Promise<PackageAc
 
   if (!base) {
     const [[contactCount], [automationCount]] = await Promise.all([
-      db.select({ val: count() }).from(contacts).where(eq(contacts.ownerUserId, userId)),
-      db.select({ val: count() }).from(automations).where(and(eq(automations.ownerUserId, userId), inArray(automations.status, ['SCHEDULED','PROCESSING']))),
+      database.select({ val: count() }).from(contacts).where(eq(contacts.ownerUserId, userId)),
+      database.select({ val: count() }).from(automations).where(and(eq(automations.ownerUserId, userId), inArray(automations.status, ['SCHEDULED','PROCESSING']))),
     ]);
     return {
       active: false, activeBase: null, activeAddons: addons.map(normalizePackage), pending,
@@ -96,20 +98,20 @@ export async function getPackageAccessSummary(userId: number): Promise<PackageAc
   const endsAt = new Date(base.endsAt!);
   const messageLimit = Math.max(0, Number(base.messageLimit || 0)) + addons.reduce((sum, a) => sum + Math.max(0, Number(a.messageLimit || 0)), 0);
   const [[messageCount], [reservedCount], [contactCount], [automationCount]] = await Promise.all([
-    db.select({ val: count() }).from(messages).where(and(
+    database.select({ val: count() }).from(messages).where(and(
       eq(messages.ownerUserId, userId),
       inArray(messages.status, ['ACCEPTED','SENT','DELIVERED','READ']),
       gte(messages.createdAt, startsAt),
       lte(messages.createdAt, endsAt),
     )),
-    db.select({ val: count() }).from(automations).where(and(
+    database.select({ val: count() }).from(automations).where(and(
       eq(automations.ownerUserId, userId),
       inArray(automations.status, ['SCHEDULED','PROCESSING']),
       gte(automations.scheduledAt, startsAt),
       lte(automations.scheduledAt, endsAt),
     )),
-    db.select({ val: count() }).from(contacts).where(eq(contacts.ownerUserId, userId)),
-    db.select({ val: count() }).from(automations).where(and(eq(automations.ownerUserId, userId), inArray(automations.status, ['SCHEDULED','PROCESSING']))),
+    database.select({ val: count() }).from(contacts).where(eq(contacts.ownerUserId, userId)),
+    database.select({ val: count() }).from(automations).where(and(eq(automations.ownerUserId, userId), inArray(automations.status, ['SCHEDULED','PROCESSING']))),
   ]);
 
   const messagesUsed = Number(messageCount?.val || 0);
@@ -135,8 +137,8 @@ export async function getPackageAccessSummary(userId: number): Promise<PackageAc
   };
 }
 
-export async function requirePackageForAction(userId: number) {
-  const summary = await getPackageAccessSummary(userId);
+export async function requirePackageForAction(userId: number, database: SubscriptionDatabase = db) {
+  const summary = await getPackageAccessSummary(userId, database);
   if (!summary.active) {
     const err: any = new Error('No active GreetSync package. Purchase a package to unlock contacts, templates, messaging and automations.');
     err.statusCode = 402;
@@ -147,8 +149,8 @@ export async function requirePackageForAction(userId: number) {
   return summary;
 }
 
-export async function assertMessageCapacity(userId: number, requested: number, options?: { reserveScheduled?: boolean; scheduledAt?: Date }) {
-  const summary = await requirePackageForAction(userId);
+export async function assertMessageCapacity(userId: number, requested: number, options?: { reserveScheduled?: boolean; scheduledAt?: Date }, database: SubscriptionDatabase = db) {
+  const summary = await requirePackageForAction(userId, database);
   if (options?.scheduledAt && summary.endsAt && options.scheduledAt > summary.endsAt) {
     const err: any = new Error(`Your active package expires on ${summary.endsAt.toISOString().slice(0,10)}. Choose a schedule before the package end date or renew the package.`);
     err.statusCode = 402; err.code = 'PACKAGE_EXPIRES_BEFORE_SCHEDULE'; throw err;
@@ -166,8 +168,8 @@ export async function assertMessageCapacity(userId: number, requested: number, o
   return summary;
 }
 
-export async function assertContactCapacity(userId: number, requestedNewContacts = 1) {
-  const summary = await requirePackageForAction(userId);
+export async function assertContactCapacity(userId: number, requestedNewContacts = 1, database: SubscriptionDatabase = db) {
+  const summary = await requirePackageForAction(userId, database);
   if (summary.contactLimit > 0 && summary.contactsUsed + requestedNewContacts > summary.contactLimit) {
     const over = summary.contactsUsed + requestedNewContacts - summary.contactLimit;
     const err: any = new Error(`Contact limit exceeded by ${over}. Your package allows ${summary.contactLimit} contacts.`);

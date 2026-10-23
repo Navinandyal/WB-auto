@@ -14,16 +14,21 @@ void main(List<String> args) {
   }
 
   final config = jsonDecode(
-    File.fromUri(Platform.script.resolve('../../GREETSYNC_DEPLOYMENT.json'))
-        .readAsStringSync(),
+    File.fromUri(
+      Platform.script.resolve('../../GREETSYNC_DEPLOYMENT.json'),
+    ).readAsStringSync(),
   );
   check(
     defaultApiBaseUrl == config['backendUrl'],
     'Saved source matches deployment',
   );
   check(
-    Uri.parse(defaultApiBaseUrl).scheme == 'https',
-    'Production uses HTTPS',
+    defaultApiBaseUrl.isEmpty || Uri.parse(defaultApiBaseUrl).scheme == 'https',
+    'Production URL is unconfigured or HTTPS; never falls back to Railway',
+  );
+  check(
+    !defaultApiBaseUrl.contains('railway.app'),
+    'Retired hosting is not a fallback',
   );
   check(
     AppConfig.apiBaseUrl == (args.isEmpty ? defaultApiBaseUrl : args.first),

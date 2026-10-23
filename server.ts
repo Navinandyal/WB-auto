@@ -1,3 +1,11 @@
+import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
+import { contactName } from './src/server/contact-name.ts';
+import { importGroupName, attachImportedGroup } from './src/server/contact-import-group.ts';
+import { enqueueSendNowBatch } from './src/server/bulk-send.ts';
+import { marketingRetryAfter, marketingLimitMessage } from './src/server/marketing-limits.ts';
+import { publicPolicyPage, publicPolicyHeaders } from './src/server/public-policies';
+import { messageMonitor } from './src/server/admin-message-monitor';
+import { savedMediaPreview } from './src/server/saved-media-preview';
 import { renderMetaSignupBridge } from './src/server/meta-signup-bridge.ts';
 import { discoverSignupAssets } from './src/server/meta-onboarding-assets.ts';
 import { metaPlatformConfig } from './src/server/meta-config.ts';
@@ -40,7 +48,6 @@ import {
 } from './src/db/schema.ts';
 import { eq, desc, asc, sql, and, count, inArray, or, like, gt, gte, lte, isNull } from 'drizzle-orm';
 import { requireAuth, requireAdmin, AuthRequest } from './src/middleware/auth.ts';
-import { localWebCors } from './src/server/cors.ts';
 import { ensureFixedAdminUser } from './src/db/users.ts';
 import { createAccessToken, createRefreshToken, createPurposeToken, verifyPurposeToken, hashPassword, hashRefreshToken, normalizeLoginPhone, verifyPassword } from './src/lib/password-auth.ts';
 import { WhatsAppService } from './src/server/whatsapp.ts';
@@ -64,8 +71,19 @@ if (!Number.isFinite(PORT) || PORT <= 0) {
   throw new Error('Invalid PORT environment variable.');
 }
 
-app.use(localWebCors);
 app.use(express.json({ limit: '30mb', verify: (req:any,_res,buffer) => { req.rawBody=Buffer.from(buffer); } }));
+
+// Wake requests never force/replay messages: the normal worker uses existing
+// durable job claims and due dates after startup. No user payload is trusted.
+app.post('/api/internal/scheduler/wake', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!schedulerAuthorized(req.headers.authorization, process.env.AUTH_TOKEN_SECRET)) {
+    return res.status(401).json({ error: 'Unauthorized scheduler request.' });
+  }
+  if (!isDatabaseConnected) return res.status(503).json({ error: 'Database unavailable.' });
+  return res.status(200).json({ status: 'awake', scheduling: 'normal-durable-worker' });
+});
+
 
 const sendRuleError = (res: any, err: any, fallback = 'Request failed.') => {
   const status = Number(err?.statusCode || 0);
@@ -218,6 +236,13 @@ async function initializeApplicationServices() {
     throw new Error('PostgreSQL is unavailable. GreetSync cannot start without its production database.');
   }
 
+  if (process.env.DATABASE_PROVIDER === 'supabase') {
+    const migrated = await pool.query("SELECT target_fingerprint FROM public.greetsync_deployment_migrations WHERE id='railway_to_supabase'");
+    if (!migrated.rows[0] || (process.env.DATABASE_TARGET_FINGERPRINT && migrated.rows[0].target_fingerprint !== process.env.DATABASE_TARGET_FINGERPRINT)) {
+      throw new Error('Supabase restore is not verified for this target. Run RUN_PRODUCTION_SETUP.cmd before enabling this backend. No admin or worker was started.');
+    }
+  }
+
   const fixedAdmin = await ensureFixedAdminUser();
   if (fixedAdmin) {
     console.log(`[Auth] Fixed administrator ready for ${fixedAdmin.phone}.`);
@@ -300,8 +325,8 @@ async function initializeApplicationServices() {
     purgeExpiredAccounts().catch((e: any) => console.warn('[Account] Scheduled purge notice:', e?.message));
   }, 60 * 60 * 1000);
 
-  // Start workers only after PostgreSQL and schema initialization succeed. This is
-  // essential in Railway because the worker must keep running even when no phone is online.
+  // Workers run while this instance is awake. Supabase Cron wakes free instances
+  // every 20 minutes; overdue jobs remain in PostgreSQL during idle sleep.
   automationWorker.start();
 
   setTimeout(() => {
@@ -952,7 +977,7 @@ app.get('/api/admin/subscriptions', requireAuth, requireAdmin, async (_req, res)
       id:userSubscriptions.id,userId:userSubscriptions.userId,status:userSubscriptions.status,startsAt:userSubscriptions.startsAt,endsAt:userSubscriptions.endsAt,createdAt:userSubscriptions.createdAt,
       pricePaise:userSubscriptions.pricePaiseSnapshot,messageLimit:userSubscriptions.messageLimitSnapshot,notes:userSubscriptions.notes,
       packageId:subscriptionPackages.id,packageName:subscriptionPackages.name,packageType:subscriptionPackages.packageType,durationMonths:subscriptionPackages.durationMonths,
-      userName:users.name,businessName:users.businessName,phone:users.phone,
+      userName:users.name,businessName:users.businessName,phone:users.phone,email:users.email,businessAddress:users.businessAddress,businessStatus:users.approvalStatus,
     }).from(userSubscriptions).innerJoin(subscriptionPackages,eq(userSubscriptions.packageId,subscriptionPackages.id)).innerJoin(users,eq(userSubscriptions.userId,users.id)).orderBy(desc(userSubscriptions.createdAt));
     res.json(rows);
   } catch(e:any){res.status(500).json({error:e.message||'Failed to load subscriptions.'});}
@@ -993,7 +1018,7 @@ app.get('/api/admin/businesses/:id', requireAuth, requireAdmin, async (req, res)
     db.select({val:count()}).from(contacts).where(eq(contacts.ownerUserId,id)), db.select({val:count()}).from(messageTemplates).where(eq(messageTemplates.ownerUserId,id)), db.select({val:count()}).from(automations).where(eq(automations.ownerUserId,id)), db.select({val:count()}).from(messages).where(eq(messages.ownerUserId,id)), db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,id)).limit(1)
   ]);
   res.json({
-    business:{...business,businessId:business.id,status:business.approvalStatus==='APPROVED'?'ACTIVE':business.approvalStatus==='PENDING'?'PENDING_APPROVAL':business.approvalStatus},
+    business:{id:business.id,businessId:business.id,name:business.name,ownerName:business.name,phone:business.phone,mobile:business.phone,email:business.email,businessName:business.businessName,businessAddress:business.businessAddress,businessLogoData:business.businessLogoData,isActive:business.isActive,createdAt:business.createdAt,approvedAt:business.approvedAt,lastLoginAt:business.lastLoginAt,status:business.approvalStatus==='APPROVED'?'ACTIVE':business.approvalStatus==='PENDING'?'PENDING_APPROVAL':business.approvalStatus},
     counts:{contacts:Number(contactCount?.val||0),templates:Number(templateCount?.val||0),automations:Number(automationCount?.val||0),messages:Number(messageCount?.val||0)},
     whatsapp:wa?{
       status:wa.connectionStatus||'SAVED',credentialsStored:true,metaAppId:wa.metaAppId||null,
@@ -1162,7 +1187,7 @@ app.get('/api/admin/businesses/:id/resources', requireAuth, requireAdmin, async 
       whatsapp: wa ? {
         status: wa.connectionStatus, metaAppId: wa.metaAppId, wabaId: wa.businessAccountId, phoneNumberId: wa.phoneNumberId,
         businessPhone: wa.businessPhone, displayPhoneNumber: wa.displayPhoneNumber, verifiedName: wa.verifiedName,
-        qualityRating: wa.qualityRating, metaBusinessId: wa.metaBusinessId, lastTestedAt: wa.lastTestedAt,
+        qualityRating: wa.qualityRating, metaBusinessId: wa.metaBusinessId, wabaName: wa.wabaName, metaBusinessName: wa.metaBusinessName, businessProfile: wa.businessProfile, lastTestedAt: wa.lastTestedAt,
         lastConnectionError: wa.lastConnectionError, credentialsStored: true,
         accessTokenStored: Boolean(wa.accessToken), appSecretStored: Boolean(wa.metaAppSecret), webhookTokenStored: Boolean(wa.webhookVerifyToken),
       } : { status: 'NOT_CONNECTED', credentialsStored: false, accessTokenStored: false, appSecretStored: false, webhookTokenStored: false },
@@ -1183,7 +1208,7 @@ app.get('/api/admin/contacts', requireAuth, requireAdmin, async (_req,res)=>{
   catch(e:any){res.status(500).json({error:e.message||'Failed to load admin contacts.'});}
 });
 app.get('/api/admin/templates', requireAuth, requireAdmin, async (_req,res)=>{
-  try { const rows=await db.select({id:messageTemplates.id,name:messageTemplates.name,language:messageTemplates.language,category:messageTemplates.category,status:messageTemplates.status,components:messageTemplates.components,variableCount:messageTemplates.variableCount,updatedAt:messageTemplates.updatedAt,businessId:users.id,businessName:users.businessName,ownerName:users.name}).from(messageTemplates).leftJoin(users,eq(messageTemplates.ownerUserId,users.id)).orderBy(desc(messageTemplates.updatedAt)); res.json(rows); }
+  try { const rows=await db.select({id:messageTemplates.id,name:messageTemplates.name,language:messageTemplates.language,category:messageTemplates.category,status:messageTemplates.status,components:messageTemplates.components,variableCount:messageTemplates.variableCount,metaTemplateId:messageTemplates.metaTemplateId,createdAt:messageTemplates.createdAt,updatedAt:messageTemplates.updatedAt,businessId:users.id,businessName:users.businessName,ownerName:users.name,ownerPhone:users.phone,ownerEmail:users.email,businessAddress:users.businessAddress}).from(messageTemplates).leftJoin(users,eq(messageTemplates.ownerUserId,users.id)).orderBy(desc(messageTemplates.updatedAt)); res.json(rows); }
   catch(e:any){res.status(500).json({error:e.message||'Failed to load admin templates.'});}
 });
 
@@ -1253,6 +1278,11 @@ app.put('/api/admin/template-suggestions/:id', requireAuth, requireAdmin, async 
 app.delete('/api/admin/template-suggestions/:id', requireAuth, requireAdmin, async (req:AuthRequest,res)=>{
   try { const id=Number(req.params.id); const rows=await db.delete(templateSuggestions).where(eq(templateSuggestions.id,id)).returning({id:templateSuggestions.id}); if(!rows.length)return res.status(404).json({error:'Template suggestion not found.'}); res.json({success:true}); }
   catch(e:any){res.status(500).json({error:e.message||'Failed to delete template suggestion.'});}
+});
+
+app.get('/api/admin/scheduled-messages', requireAuth, requireAdmin, async (req, res) => {
+  try { res.json(await messageMonitor(req.query, pool)); }
+  catch (err:any) { res.status(/Invalid|Use a valid|Start date/.test(err.message) ? 400 : 500).json({error:err.message || 'Unable to load scheduled messages.'}); }
 });
 
 app.get('/api/admin/automations', requireAuth, requireAdmin, async (_req,res)=>{
@@ -1625,6 +1655,7 @@ async function resolveMetaPublicBaseUrl(configuredUrl?: string) {
     process.env.PUBLIC_BASE_URL ||
     process.env.META_PUBLIC_BASE_URL ||
     process.env.APP_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '')
   ).trim().replace(/\/$/, '');
 
@@ -2351,7 +2382,7 @@ app.get('/api/contacts', requireAuth, async (req: AuthRequest, res) => {
         groupMap.set(membership.contactId, ids);
       }
     }
-    const enriched = list.map((contact) => ({ ...contact, groupIds: groupMap.get(contact.id) || [] }));
+    const enriched = list.map((contact) => ({ ...contact, name: contactName(contact.name), groupIds: groupMap.get(contact.id) || [] }));
     const filtered = search
       ? enriched.filter((contact) =>
           contact.name.toLowerCase().includes(search) ||
@@ -2368,7 +2399,7 @@ app.post('/api/contacts', requireAuth, requireActiveBusinessPackage, async (req:
   try {
     if (req.user?.role === 'admin') return res.status(403).json({ error: 'Create contacts from a business account.' });
     const { name, phone, email, optIn, notes, dob, birthdayAutomationEnabled, groupIds, avatarData } = req.body || {};
-    const cleanName = String(name || '').trim();
+    const cleanName = contactName(name);
     if (!cleanName || !phone) return res.status(400).json({ error: 'Full Name and WhatsApp phone number are required.' });
     if (!isValidPersonName(cleanName)) return res.status(400).json({ error: 'Full Name may contain letters, spaces, apostrophes, periods and hyphens only.' });
     const cleanNotes = notes == null ? '' : String(notes).trim();
@@ -2433,7 +2464,7 @@ app.put('/api/contacts/:id', requireAuth, requireActiveBusinessPackage, async (r
     const { name, phone, email, optIn, notes, dob, birthdayAutomationEnabled, groupIds, avatarData } = req.body || {};
     const updateData: any = { updatedAt: new Date() };
     if (name !== undefined) {
-      const cleanName = String(name).trim();
+      const cleanName = contactName(name);
       if (!isValidPersonName(cleanName)) return res.status(400).json({ error: 'Full Name may contain letters, spaces, apostrophes, periods and hyphens only.' });
       updateData.name = cleanName;
     }
@@ -2512,61 +2543,69 @@ app.post('/api/contacts/import', requireAuth, requireActiveBusinessPackage, asyn
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
     if (!rows.length) return res.status(400).json({ error: 'No contact rows were provided. Name and Phone are mandatory columns.' });
     if (rows.length > 10000) return res.status(400).json({ error: 'CSV/Excel imports are limited to 10,000 contact rows per file.' });
-    await assertContactCapacity(req.user!.id, rows.length);
+    const groupName = importGroupName(req.body?.createGroupName);
+    const importedContactIds: number[] = [];
 
     let imported = 0, skipped = 0, failed = 0;
     const errors: any[] = [];
     const birthdayContactIds: number[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i] || {};
-      const name = String(row.name || '').trim();
-      const rawPhoneValue = String(row.phone || '').trim();
-      if (!name || !rawPhoneValue) {
-        failed++;
-        errors.push({ row: i + 2, error: !name && !rawPhoneValue ? 'Missing mandatory Name and Phone fields' : !name ? 'Missing mandatory Name field' : 'Missing mandatory Phone field' });
-        continue;
-      }
-      if (!isValidPersonName(name)) {
-        failed++;
-        errors.push({ row: i + 2, error: 'Invalid contact name' });
-        continue;
-      }
-      const country = String(row.country_code || '').replace(/\D/g, '');
-      let rawPhone = rawPhoneValue;
-      if (!rawPhoneValue.startsWith('+')) {
-        const national = rawPhoneValue.replace(/\D/g, '');
-        rawPhone = country ? `+${country}${national}` : (national.length === 10 ? `+91${national}` : `+${national}`);
-      }
-      const check = validateInternationalPhone(rawPhone);
-      if (!check.ok) { failed++; errors.push({ row: i + 2, error: check.error }); continue; }
+    const group = await db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(45872, ${req.user!.id})`);
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || {};
+        const name = contactName(row.name);
+        const rawPhoneValue = String(row.phone || '').trim();
+        if (!name || !rawPhoneValue) {
+          failed++;
+          errors.push({ row: i + 2, error: !name && !rawPhoneValue ? 'Missing mandatory Name and Phone fields' : !name ? 'Missing mandatory Name field' : 'Missing mandatory Phone field' });
+          continue;
+        }
+        if (!isValidPersonName(name)) {
+          failed++;
+          errors.push({ row: i + 2, error: 'Invalid contact name' });
+          continue;
+        }
+        const country = String(row.country_code || '').replace(/\D/g, '');
+        let rawPhone = rawPhoneValue;
+        if (!rawPhoneValue.startsWith('+')) {
+          const national = rawPhoneValue.replace(/\D/g, '');
+          rawPhone = country ? `+${country}${national}` : (national.length === 10 ? `+91${national}` : `+${national}`);
+        }
+        const check = validateInternationalPhone(rawPhone);
+        if (!check.ok) { failed++; errors.push({ row: i + 2, error: check.error }); continue; }
 
-      const [dupe] = await db.select({ id: contacts.id }).from(contacts)
-        .where(and(eq(contacts.ownerUserId, req.user!.id), eq(contacts.phone, check.normalized!))).limit(1);
-      if (dupe) { skipped++; continue; }
+        const [dupe] = await tx.select({ id: contacts.id }).from(contacts)
+          .where(and(eq(contacts.ownerUserId, req.user!.id), eq(contacts.phone, check.normalized!))).limit(1);
+        if (dupe) { skipped++; importedContactIds.push(dupe.id); continue; }
 
-      const email = String(row.email || '').trim();
-      if (email && !isValidEmailSyntax(email)) { failed++; errors.push({ row: i + 2, error: 'Invalid email format' }); continue; }
-      const rawNotes = String(row.notes || '').trim();
-      if (rawNotes.length > 128) { failed++; errors.push({ row: i + 2, error: 'Notes exceed 128 characters' }); continue; }
-      const rawOptIn = String(row.opt_in ?? '').trim().toLowerCase();
-      const importedOptIn = rawOptIn === '' ? true : ['true','1','yes','y','on'].includes(rawOptIn);
-      let importedDob: string | null = null;
-      try { importedDob = validIsoBirthDate(row.date_of_birth); } catch (error: any) {
-        failed++; errors.push({ row: i + 2, error: error.message || 'Invalid date of birth' }); continue;
+        const email = String(row.email || '').trim();
+        if (email && !isValidEmailSyntax(email)) { failed++; errors.push({ row: i + 2, error: 'Invalid email format' }); continue; }
+        const rawNotes = String(row.notes || '').trim();
+        if (rawNotes.length > 128) { failed++; errors.push({ row: i + 2, error: 'Notes exceed 128 characters' }); continue; }
+        const rawOptIn = String(row.opt_in ?? '').trim().toLowerCase();
+        const importedOptIn = rawOptIn === '' ? true : ['true','1','yes','y','on'].includes(rawOptIn);
+        let importedDob: string | null = null;
+        try { importedDob = validIsoBirthDate(row.date_of_birth); } catch (error: any) {
+          failed++; errors.push({ row: i + 2, error: error.message || 'Invalid date of birth' }); continue;
+        }
+        const [insertedContact] = await tx.insert(contacts).values({
+          ownerUserId: req.user!.id,
+          name,
+          phone: check.normalized!,
+          email: email || null,
+          dob: importedDob,
+          optIn: importedOptIn,
+          birthdayAutomationEnabled: true,
+          notes: rawNotes || null,
+        }).returning({ id: contacts.id, dob: contacts.dob });
+        importedContactIds.push(insertedContact.id);
+        if (insertedContact?.id && insertedContact.dob) birthdayContactIds.push(insertedContact.id);
+        imported++;
       }
-      const [insertedContact] = await db.insert(contacts).values({
-        ownerUserId: req.user!.id,
-        name,
-        phone: check.normalized!,
-        email: email || null,
-        dob: importedDob,
-        optIn: importedOptIn,
-        birthdayAutomationEnabled: true,
-        notes: rawNotes || null,
-      }).returning({ id: contacts.id, dob: contacts.dob });
-      if (insertedContact?.id && insertedContact.dob) birthdayContactIds.push(insertedContact.id);
-      imported++;
-    }
+      // Count the contacts already inserted in this transaction exactly once.
+      await assertContactCapacity(req.user!.id, 0, tx);
+      return await attachImportedGroup(tx, req.user!.id, groupName, importedContactIds);
+    });
     let birthdayScheduled = 0;
     let birthdaySchedulingQueued = 0;
     const birthdayErrors: Array<{contactId:number; error:string}> = [];
@@ -2590,7 +2629,7 @@ app.post('/api/contacts/import', requireAuth, requireActiveBusinessPackage, asyn
       birthdaySchedulingQueued = birthdayContactIds.length;
       setImmediate(() => scheduleBirthdayIds(birthdayContactIds).catch((error) => console.warn('Birthday import scheduling notice:', error?.message)));
     }
-    res.json({ success: true, imported, skipped, failed, birthdayScheduled, birthdaySchedulingQueued, birthdayErrors: birthdayErrors.slice(0, 25), errors: errors.slice(0, 100) });
+    res.json({ success: true, imported, skipped, failed, group, birthdayScheduled, birthdaySchedulingQueued, birthdayErrors: birthdayErrors.slice(0, 25), errors: errors.slice(0, 100) });
   } catch (err: any) { sendRuleError(res, err, 'Contact import failed.'); }
 });
 
@@ -2600,31 +2639,39 @@ app.post('/api/contacts/import-device', requireAuth, requireActiveBusinessPackag
     const rows=Array.isArray(req.body?.rows)?req.body.rows:[];
     if(!rows.length) return res.status(400).json({error:'Select at least one phone contact.'});
     if(rows.length>10000) return res.status(400).json({error:'You can import at most 10,000 contacts at once.'});
-    await assertContactCapacity(req.user!.id, rows.length);
+    const groupName = importGroupName(req.body?.createGroupName);
+    const importedContactIds: number[] = [];
     let imported=0,skipped=0,failed=0; const errors:any[]=[];
-    for(let i=0;i<rows.length;i++){
-      const row=rows[i]||{};
-      const name=String(row.name||'Phone Contact').trim()||'Phone Contact';
-      const check=validateInternationalPhone(String(row.phone||''));
-      if(!check.ok){failed++;errors.push({row:i+1,name,error:check.error});continue;}
-      const [dupe]=await db.select({id:contacts.id}).from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),eq(contacts.phone,check.normalized!))).limit(1);
-      if(dupe){skipped++;continue;}
-      let avatarData: string | null = null;
-      try { avatarData = validateImageData(row.avatarData, 900_000); } catch (error: any) {
-        errors.push({row:i+1,name,error:error.message||'Invalid contact photo'}); failed++; continue;
+    const group = await db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(45872, ${req.user!.id})`);
+      for(let i=0;i<rows.length;i++){
+        const row=rows[i]||{};
+        const name=contactName(row.name)||'Phone contact';
+        const check=validateInternationalPhone(String(row.phone||''));
+        if(!check.ok){failed++;errors.push({row:i+1,name,error:check.error});continue;}
+        const [dupe]=await tx.select({id:contacts.id}).from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),eq(contacts.phone,check.normalized!))).limit(1);
+        if(dupe){skipped++;importedContactIds.push(dupe.id);continue;}
+        let avatarData: string | null = null;
+        try { avatarData = validateImageData(row.avatarData, 900_000); } catch (error: any) {
+          errors.push({row:i+1,name,error:error.message||'Invalid contact photo'}); failed++; continue;
+        }
+        const [insertedContact] = await tx.insert(contacts).values({
+          ownerUserId:req.user!.id,
+          name,
+          phone:check.normalized!,
+          optIn:true,
+          birthdayAutomationEnabled:false,
+          avatarData,
+          notes:'Imported from device contacts. WhatsApp opt-in is enabled by default and can be changed from contact settings.',
+        }).returning({id:contacts.id});
+        importedContactIds.push(insertedContact.id);
+        imported++;
       }
-      await db.insert(contacts).values({
-        ownerUserId:req.user!.id,
-        name,
-        phone:check.normalized!,
-        optIn:true,
-        birthdayAutomationEnabled:false,
-        avatarData,
-        notes:'Imported from device contacts. WhatsApp opt-in is enabled by default and can be changed from contact settings.',
-      });
-      imported++;
-    }
-    res.json({success:true,imported,skipped,failed,errors:errors.slice(0,100)});
+      // Count the contacts already inserted in this transaction exactly once.
+      await assertContactCapacity(req.user!.id, 0, tx);
+      return await attachImportedGroup(tx, req.user!.id, groupName, importedContactIds);
+    });
+    res.json({success:true,imported,skipped,failed,group,errors:errors.slice(0,100)});
   } catch(err:any){sendRuleError(res,err,'Device contact import failed.');}
 });
 
@@ -2688,7 +2735,7 @@ app.get('/api/contact-groups/:id', requireAuth, async (req: AuthRequest, res) =>
       avatarData: contacts.avatarData,
     }).from(contactGroupMembers).innerJoin(contacts, eq(contactGroupMembers.contactId, contacts.id))
       .where(eq(contactGroupMembers.groupId,id));
-    res.json({ group, members });
+    res.json({ group, members: members.map(member=>({...member,name:contactName(member.name)})) });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to load group.' }); }
 });
 
@@ -3030,6 +3077,12 @@ app.get('/api/whatsapp/media/:id/preview',requireAuth,async(req:AuthRequest,res)
     res.set('Cache-Control','private, no-store');res.json({mimeType:row.mime_type,fileName:row.file_name,dataBase64:row.data_base64});
   }catch(e:any){res.status(500).json({error:'Unable to load media preview.'});}
 });
+app.get('/api/admin/message-media/:id/preview',requireAuth,requireAdmin,async(req,res)=>{
+  try { const preview=await savedMediaPreview(String(req.params.id),{admin:true},pool);
+    if(!preview)return res.status(404).json({error:'Saved media preview is unavailable.'});
+    res.set('Cache-Control','private, no-store');res.json(preview);
+  }catch(e:any){res.status(500).json({error:'Unable to load media preview.'});}
+});
 // AI only proposes content. Draft saving and Meta submission require the existing user confirmation flow.
 const aiGenerationWindows=new Map<number,{started:number;count:number;busy:boolean}>();
 const aiChecks=new Map<number,number>();
@@ -3340,6 +3393,8 @@ async function retryReference(ownerUserId:number, rawId:unknown, recipientIds:nu
   if(!Number.isInteger(id)||id<=0)throw Object.assign(new Error('Invalid original message ID.'),{statusCode:400});
   const [original]=await db.select().from(automations).where(and(eq(automations.id,id),eq(automations.ownerUserId,ownerUserId))).limit(1);
   assertRetrySource(original,ownerUserId,recipientIds,duplicateAcknowledged);
+  const records=await db.select().from(messages).where(and(eq(messages.ownerUserId,ownerUserId),eq(messages.automationId,id)));
+  if(records.some(record=>marketingRetryAfter(record))||new Date((original?.variables as any)?.__marketing_retry_after||0)>new Date())throw Object.assign(new Error(marketingLimitMessage),{statusCode:409});
   return String(id);
 }
 
@@ -3395,7 +3450,7 @@ app.post('/api/automations', requireAuth, requireActiveBusinessPackage, async (r
     // must not leave a partially scheduled batch that repeats when retried.
     const [business]=await db.select().from(users).where(eq(users.id,req.user!.id)).limit(1);
     const jobs=selectedContacts.map(contact => ({ownerUserId:req.user!.id,contactId:contact.id,templateId:template.id,
-      templateSnapshot:previewSnapshot(template),variables:resolveTemplateVariablesForContact(template.components as any[], variables, contact, targetDate, business),
+      templateSnapshot:previewSnapshot(template),variables:resolveTemplateVariablesForContact(template.components as any[], variables, {...contact,name:contactName(contact.name)}, targetDate, business),
       scheduledAt:targetDate,timezone,status:'SCHEDULED'}));
     const created=await db.insert(automations).values(jobs).returning();
     await db.insert(auditLogs).values({action:'AUTOMATION_SCHEDULED',actor:req.user!.phone,details:{automationIds:created.map(x=>x.id),contactIds,templateId:tId,scheduledAt:targetDate.toISOString(),timezone}});
@@ -3499,13 +3554,25 @@ const sendNowHandler=async(req:AuthRequest,res:any)=>{
     if(!/^[A-Za-z0-9_-]{8,128}$/.test(requestId))return res.status(400).json({error:'Invalid send request ID.'});
     // Resolve the entire batch before sending any recipient.
     const [business]=await db.select().from(users).where(eq(users.id,userId)).limit(1);
-    const eligible=recipients.filter(c=>c.optIn).map(contact=>({contact,vars:resolveTemplateVariablesForContact(template.components as any[],vars,contact,new Date(),business)}));
-    const previous=await db.select({requestId:automations.sendRequestId}).from(automations).where(inArray(automations.sendRequestId,eligible.map(e=>`${userId}:${requestId}:${e.contact.id}`)));
-    await assertMessageCapacity(userId,eligible.length-previous.length,{reserveScheduled:false});
+    const eligible=recipients.filter(c=>c.optIn).map(contact=>({contact,vars:resolveTemplateVariablesForContact(template.components as any[],vars,{...contact,name:contactName(contact.name)},new Date(),business)}));
     const creds=await resolveWhatsAppCredentials(userId);if(!creds.isFullyConfigured)return res.status(400).json({error:'Connect your WhatsApp Business account first.'});
     const results:any[]=recipients.filter(c=>!c.optIn).map(c=>({contactId:c.id,name:c.name,status:'SKIPPED',error:'No WhatsApp consent'}));
-    for(const row of eligible)results.push(await sendNowActivity(userId,template,row.contact,row.vars,creds,requestId));
-    res.json({success:true,requestId,total:results.length,sent:results.filter(r=>['SENT','DELIVERED','READ'].includes(r.status)).length,failed:results.filter(r=>r.status==='FAILED').length,accepted:results.filter(r=>r.status==='ACCEPTED').length,processing:results.filter(r=>r.status==='PROCESSING').length,skipped:results.filter(r=>r.status==='SKIPPED').length,results});
+    const recentRestrictions = template.category === 'MARKETING' ? await db.select().from(messages).where(and(
+      eq(messages.ownerUserId,userId),inArray(messages.contactId,ids),eq(messages.errorCode,'131049'),
+      gte(messages.failedAt,new Date(Date.now()-86400000)))) : [];
+    const ready=eligible.filter(row=>{
+      const restriction=recentRestrictions.filter(m=>m.contactId===row.contact.id).map(m=>marketingRetryAfter(m)).filter((d):d is Date=>!!d).sort((a,b)=>b.getTime()-a.getTime())[0];
+      if(!restriction)return true;
+      results.push({contactId:row.contact.id,name:row.contact.name,status:'SKIPPED',error:marketingLimitMessage,retryAfter:restriction.toISOString()});
+      return false;
+    });
+    results.push(...await enqueueSendNowBatch(db,userId,requestId,template,ready,
+      (count,tx)=>assertMessageCapacity(userId,count,{reserveScheduled:true,scheduledAt:new Date()},tx)));
+    // A normal worker poll executes these durable jobs even after the app closes.
+    res.status(202).json({success:true,requestId,total:results.length,queued:results.filter(r=>r.status==='SCHEDULED').length,
+      sent:results.filter(r=>['SENT','DELIVERED','READ'].includes(r.status)).length,failed:results.filter(r=>r.status==='FAILED').length,
+      accepted:results.filter(r=>r.status==='ACCEPTED').length,processing:results.filter(r=>r.status==='PROCESSING').length,
+      skipped:results.filter(r=>r.status==='SKIPPED').length,results});
   }catch(err:any){sendRuleError(res,err,'Unable to send messages.');}
 };
 app.post('/api/whatsapp/send',requireAuth,requireActiveBusinessPackage,sendNowHandler);
@@ -3745,13 +3812,23 @@ app.post('/api/webhooks/whatsapp',whatsappWebhookHandler);
    8. HEALTH & VITE INTEGRATION
    ========================================================================= */
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    service: 'whatsapp-automation-backend',
-    build: 'meta-connect-production-20261013-v2',
+// Public website policies open from Admin Settings in the external browser.
+for (const slug of ['privacy-policy', 'terms-and-conditions']) {
+  app.get('/' + slug, (_req, res) => {
+    for (const [key, value] of Object.entries(publicPolicyHeaders)) res.setHeader(key, value);
+    res.type('html').send(publicPolicyPage(slug));
   });
+}
+
+app.get('/api/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
+      build:'render-supabase-free-20261023',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
+  } catch {
+    res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});
+  }
 });
 
 // Any unmatched /api route returns 404 JSON instead of falling through to Vite SPA html

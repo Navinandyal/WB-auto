@@ -1,3 +1,4 @@
+import { metaErrorText } from './marketing-limits.ts';
 import { randomUUID } from 'node:crypto';
 import { templateHeaderError } from './template-media.ts';
 /**
@@ -188,10 +189,7 @@ export class WhatsAppService {
    */
   static formatMetaErrorMessage(errorObj: any, status: number): { message: string; code: string } {
     const errCode = errorObj?.code ? String(errorObj.code) : String(status);
-    let errMsg = errorObj?.error_user_msg || errorObj?.message || `Meta API error (${status})`;
-    if (errorObj?.error_data?.details) {
-      errMsg += ` (${errorObj.error_data.details})`;
-    }
+    let errMsg = metaErrorText(errorObj, `Meta API error (${status})`);
 
     if (errCode === '131030' || errMsg.includes('131030') || errMsg.toLowerCase().includes('not in allowed list')) {
       errMsg = `Recipient not in allowed list (Meta Error #131030): Your Meta App is in Development / Test Mode. Meta only permits messages to verified test numbers. To fix: In Meta Developer Dashboard -> WhatsApp -> API Setup, find the "To" recipient dropdown, click "Manage phone number list", add the recipient's phone number, and verify with OTP. (To message anyone without whitelisting, switch your Meta App to Live Mode).`;

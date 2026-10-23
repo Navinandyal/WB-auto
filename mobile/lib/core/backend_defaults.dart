@@ -1,3 +1,3 @@
-// Public backend origin only. Setup refreshes this after checking Railway health.
-// Credentials and API keys must never be added to this file.
-const defaultApiBaseUrl = "https://wishflow-backend-production-e75d.up.railway.app";
+// Set by RUN_PRODUCTION_SETUP.cmd after the Render release is verified.
+// No fallback to the retired Railway backend.
+const defaultApiBaseUrl = '';

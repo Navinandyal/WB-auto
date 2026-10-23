@@ -1,3 +1,7 @@
+> Hosting update: use [RENDER_SUPABASE_START_HERE.md](RENDER_SUPABASE_START_HERE.md). The Railway instructions below are historical.
+
+For the latest database precedence fix, read **GREETSYNC_DATABASE_FIX_20261015.md**. The selected .env/private database connection now takes precedence over an older backend connection, and the requested host/port/database are pinned.
+
 For the latest production-default and Facebook flow update, read **GREETSYNC_ONE_COMMAND_START_HERE.md**. Normal `RUN_PRODUCTION_SETUP.cmd` deploys the backend and builds the APK; `-SkipApkBuild` intentionally does not.
 
 # GreetSync — automatic Railway setup without repeated questions

@@ -1,3 +1,5 @@
+> Hosting update: use [RENDER_SUPABASE_START_HERE.md](RENDER_SUPABASE_START_HERE.md). The Railway instructions below are historical.
+
 # GreetSync — deploy backend and build APK with one command
 
 Run this from your existing project folder:
@@ -13,7 +15,7 @@ Do not add `-SkipApkBuild` when you want an APK. That flag intentionally skips i
 1. Extract the `GreetSync` folder's contents into `D:\Aikyam\project`, replacing the supplied source/scripts. Avoid creating an extra nested `project\GreetSync` directory by mistake.
 2. Keep your existing private `.env`, Firebase configuration, original signing keys, `mobile\android\key.properties` and `.android-signing` folder. Do not delete your installed app or signing identity.
 3. Run `RUN_PRODUCTION_SETUP.cmd` and wait for its final success. Node/npm, Flutter, Android SDK and a compatible JDK must be installed on the PC as for your earlier successful build.
-4. Install the newly created `D:\Aikyam\project\GreetSync-production.apk`. This version is **1.0.4 (build 5)**. Use the new root APK rather than a copy from an earlier build.
+4. Install the newly created `D:\Aikyam\project\GreetSync-production.apk`. This version is **1.0.5 (build 6)**. Use the new root APK rather than a copy from an earlier build.
 
 ## Why the screenshot could not connect
 

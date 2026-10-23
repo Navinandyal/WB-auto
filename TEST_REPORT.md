@@ -227,3 +227,93 @@ Executed checks:
 - No live Railway deployment or production database mutation was performed here.
   The one-command script performs those steps on the user's configured PC and
   preserves its signing identity.
+
+## Admin redesign — 14 October 2026
+
+Fixed bottom navigation with an internal admin navigator replaces the drawer.
+Contacts/templates support business filters and details; suggestions sit inside
+Templates. Scheduled messages combine schedules and immediate outbound activity,
+show original snapshots, recipient numbers, daily IST totals and paginated history.
+Packages expose owner details before decisions. Settings removes Notifications
+and opens working public policy website pages using the existing policy text.
+The standalone Messages screen is removed. Existing Meta signup, native signing,
+production URL and account-isolation fixes are preserved. Version is 1.0.5+6.
+
+- TypeScript check and production backend build passed.
+- **134 tests passed, 0 failed**. Includes 7 reporting/media regressions and
+  5 real HTTP/PGlite tests exercising production JWT authentication/admin guards,
+  owner metadata, secret exclusion, filtered daily history and policy HTML routes.
+- Database regression suite passed, including Coexistence and delivery behavior.
+- Source-only Dart analysis of the complete mobile lib reports **zero errors**
+  using Dart 3.13.5 and Flutter/package source snapshots. Existing style/deprecation
+  diagnostics remain. This is not Flutter pub resolution or a native/UI build.
+- Real Dart production backend configuration (20 checks) and iOS reminder
+  logic (6 checks) passed.
+- No live Railway deployment, native APK build or physical-device UI check was
+  run. A new APK must be built locally with the preserved original signing key.
+
+Setup validation: **226 assertions across 24 mocked workflows** and **26
+production-backend assertions** passed with this release identifier. Normal
+execution still deploys then builds without account selection, waits for the new
+backend build, persists the HTTPS origin and preserves the signing identity.
+
+## Pinned PostgreSQL configuration — 15 October 2026
+
+Earlier setup could replace a manually selected .env database with the current
+Railway backend's database, and deploy a different URL from the migration URL.
+The update pins the owner's requested host/port/database in non-secret deployment
+configuration. The supplied connection is kept in a private local connection file
+excluded from Git, Docker context and Railway source uploads. An updated .env
+matching the target takes precedence, including password rotation. Bootstrap can
+correct an old .env, discovery is restricted to the pin, and this configuration
+uses the exact same selected public URL for local migration and deployment.
+
+Runtime target fields are set with the selected URL. Pool initialization refuses
+a mismatched host/port/database or connection-query override. Development honors
+local .env database settings over stale shell values; production honors service
+variables. Existing auth/encryption keys, non-database local settings, mobile UI,
+Meta signup and native signing files are preserved. No mobile version change.
+
+- TypeScript check and production backend build passed.
+- **139 Node tests passed, 0 failed**, including target mismatch, password
+  rotation and development/production environment precedence.
+- **260 assertions across 26 mocked setup workflows passed**, including local
+  .env and private-configuration cases that must deploy the selected public URL
+  instead of the old backend's private URL.
+- **24 database-selection assertions passed**, including repeat runs, related
+  service selection, multiple databases, missing target and wrong host/port/name.
+- **26 production-backend assertions passed** for the new release identifier.
+- Database regression suite passed.
+- Credential scan confirmed the supplied password is absent from compiled
+  bundles, backend source and mobile source. Only the explicitly private
+  connection file in the ZIP contains the supplied connection.
+- The read-only live PostgreSQL check failed at DNS resolution (EAI_AGAIN).
+  Database connectivity/authentication could not be verified here. No live
+  database schema changes, Railway deployment or APK build was performed.
+
+## Bulk queue and contact groups — 22 October 2026
+
+TypeScript checking, 147 Node regression tests, isolated PostgreSQL regressions and the production build passed. The new PostgreSQL-backed queue tests cover 200 recipients, per-recipient failures/uncertain results, worker restarts, competing claims, idempotent request replay and real transactional quota reservations. Group tests cover owner scoping, existing/duplicate members and transaction rollback. Policy tests cover Meta 131049 cooldown and bounded retries only for definite throughput/pair rate rejections.
+
+The setup scripts passed 260 no-prompt mocked workflow assertions, 24 database-selection assertions and 26 production-health assertions. Android signature/install helper fixtures exited successfully. No live deployment or real APK build was run. Forty Dart import/name/preview checks passed. Offline full-mobile source analysis reports zero errors and three existing warnings; source snapshots/manual package mappings are excluded from the ZIP. Native plugins, device rendering and a live Meta campaign remain unverified here. See GREETSYNC_BULK_CONTACTS_20261022.md for behavior, setup and the screenshot diagnosis.
+
+## Railway temporary deployment pause — 23 October 2026
+
+Only deployment tooling, its tests and documentation changed. The setup now captures and displays Railway upload output, retries only explicit temporary pause rejections three times with 30/60-second backoff, and preserves the backend-release gate before APK creation. Already accepted/queued deployments and ambiguous upload failures are not automatically repeated.
+
+Passed 301 assertions across 30 mocked full setup workflows, plus the existing 24 database-selection and 26 production-health assertions. New cases cover recovery after two pause rejections, a persistent pause, uncertain upload outcome and a pause phrase after a deployment was accepted. No live deployment, real database modification or new APK build was performed for this tooling-only update. The earlier application's validation results above belong to the preceding package.
+
+## Render + Supabase migration — 23 October 2026
+
+TypeScript checking, the production web/backend build, **161 Node regression tests** and the existing **18 isolated PostgreSQL integration scenarios** passed. The new tests cover project identity for Supabase shared poolers, wrong/unsafe hosting targets, encryption-key mismatch, restore-only COPY extraction, actual PostgreSQL COPY with deferred foreign keys and sequence preservation, row-count verification, rollback, public Data API role denial, Git publishing to an isolated local bare repository, secret-file exclusion, mocked Render API flow and exact commit/database health verification before APK creation.
+
+Both new Windows PowerShell scripts parse successfully. Existing APK/signing/install fixtures passed **98 assertions** (native responses mocked). Full mobile source analysis reports **zero errors and three existing warnings**, plus existing style/deprecation notices. The backend configuration check passed **21 checks**, and the import/name/preview tools passed **40 checks**. Offline framework/package source mappings were used; this does not verify a native Flutter dependency solve or device UI.
+
+No actual database backup or Render/Supabase account credentials were provided. No cloud resource was created, external Git branch pushed, database restored online, Meta configuration changed or real APK/IPA built here. The new scripts are prepared for those configured operations on the user's development PC. The previous Railway setup tests were retired with their deployment implementation; historical results above refer to their respective earlier releases.
+
+
+## Free Render scheduler update — 23 October 2026
+
+Removed paid-only deployment guard; Blueprint now defaults to Free. Supabase Cron + pg_net wakes Render every 20 minutes using a purpose-specific token encrypted in Vault. Wake endpoint does not force/replay jobs; durable worker claims are unchanged. Setup installs the job only after exact deployed-release health verification and before publishing APK defaults/build.
+
+Validation: all 164 Node tests passed; TypeScript check and Vite/esbuild production build passed. Focused scheduler tests cover token rejection, Vault-only command contents, cold-start timeout, named-job setup, transaction rollback and failure redaction. Existing bulk/message/restore tests pass. Supabase extension installation/cron execution was not tested against a live hosted project; no hosting credentials were available. No native APK was built in this environment. APK version is 1.0.8+9.

@@ -12,8 +12,9 @@
     "lint": "tsc --noEmit",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:push": "drizzle-kit push",
-    "test": "node --import tsx --test tests/*.test.ts",
-    "test:database": "node --import tsx tests/database-integration.mjs"
+    "test": "node --import tsx --test --test-concurrency=2 tests/*.test.ts",
+    "test:database": "node --import tsx tests/database-integration.mjs",
+    "db:prepare-supabase": "tsx src/db/prepare-supabase.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

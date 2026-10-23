@@ -1,3 +1,5 @@
+import '../core/delivery_error.dart';
+import '../core/contact_name.dart' as contact_names;
 import 'dart:convert';
 
 int _i(dynamic v, [int d = 0]) => v is int ? v : int.tryParse('$v') ?? d;
@@ -148,7 +150,7 @@ class Contact {
 
   factory Contact.fromJson(Map<String, dynamic> j) => Contact(
     id: _i(j['id']),
-    name: _s(j['name']),
+    name: contact_names.contactName(j['name']),
     phone: _s(j['phone']),
     optIn: _b(j['optIn'] ?? j['opt_in'], true),
     email: j['email']?.toString(),
@@ -468,8 +470,10 @@ class Automation {
     timezone: _s(j['timezone'], 'Asia/Kolkata'),
     status: _s(j['status']),
     executedAt: DateTime.tryParse(_s(j['executedAt'])),
-    errorMessage: j['errorMessage']?.toString(),
-    contactName: _s(j['contactName']),
+    errorMessage: j['errorMessage'] == null
+        ? null
+        : deliveryError(j['errorMessage']),
+    contactName: contact_names.contactName(j['contactName']),
     contactPhone: _s(j['contactPhone']),
     contactOptIn: _b(j['contactOptIn'], true),
     templateName: _s(j['templateName']),
@@ -614,7 +618,7 @@ class BirthdayItem {
   final int? automationId, templateId;
   factory BirthdayItem.fromJson(Map<String, dynamic> j) => BirthdayItem(
     contactId: _i(j['contactId']),
-    contactName: _s(j['contactName']),
+    contactName: contact_names.contactName(j['contactName']),
     contactPhone: _s(j['contactPhone']),
     optIn: _b(j['optIn']),
     dob: _s(j['dob']),

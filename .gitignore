@@ -38,3 +38,11 @@ mobile/ios_build_config.json
 mobile/.ios-*.tmp
 *.xcarchive
 *.ipa
+
+GREETSYNC_DATABASE.local.env
+
+GREETSYNC_RENDER.local.env
+backups/
+.greetsync-deploy/
+*.dump
+*.backup

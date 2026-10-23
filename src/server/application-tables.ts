@@ -1,0 +1,2 @@
+/** GreetSync-owned tables only. Supabase auth/storage schemas are never migrated. */
+export const applicationTables = ["users", "password_reset_requests", "refresh_sessions", "biometric_credentials", "whatsapp_accounts", "platform_meta_settings", "meta_embedded_signup_sessions", "contacts", "contact_groups", "contact_group_members", "message_templates", "automations", "message_media", "meta_webhook_inbox", "push_devices", "messages", "automation_executions", "notifications", "subscription_packages", "user_subscriptions", "template_suggestions", "audit_logs"] as const;

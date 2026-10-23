@@ -1,8 +1,10 @@
+import { sendRetryPlan } from './send-retry.ts';
+import { marketingRetryAfter, marketingLimitMessage } from './marketing-limits.ts';
 import { prepareDeliveryTracking } from './delivery-setup.ts';
 import { acceptanceVariables } from './message-acceptance.ts';
 import { semanticComponents, previewSnapshot } from './template-rules.ts';
-import { and, eq, lte, isNull, or } from 'drizzle-orm';
-import { db, isDatabaseConnected, pool } from '../db/index.ts';
+import { and, eq, lte, gte, asc, isNull, or } from 'drizzle-orm';
+import { db as defaultDb, isDatabaseConnected, pool } from '../db/index.ts';
 import {
   automations,
   contacts,
@@ -40,6 +42,7 @@ export interface WorkerRunResult {
   processed: number;
   successCount: number;
   failureCount: number;
+  deferredCount?: number;
   message?: string;
   details?: Array<{
     id: number;
@@ -49,7 +52,9 @@ export interface WorkerRunResult {
   }>;
 }
 
-class AutomationWorker {
+export class AutomationWorker {
+  constructor(private readonly db: typeof defaultDb = defaultDb,
+    private readonly pause: (ms:number)=>Promise<void> = ms=>new Promise(resolve=>setTimeout(resolve,ms))) {}
   private isProcessing = false;
   private intervalTimer: NodeJS.Timeout | null = null;
   private pollIntervalMs = 5000; // Check every 5 seconds
@@ -150,7 +155,7 @@ class AutomationWorker {
       );
     }
 
-    const dueJobs = await db
+    const dueJobs = await this.db
       .select({
         automation: automations,
         contact: contacts,
@@ -160,7 +165,8 @@ class AutomationWorker {
       .innerJoin(contacts, eq(automations.contactId, contacts.id))
       .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
       .where(whereClause)
-      .limit(10);
+      .orderBy(asc(automations.scheduledAt), asc(automations.id))
+      .limit(25);
 
     if (dueJobs.length === 0) {
       return { processed: 0, successCount: 0, failureCount: 0, message: 'No due automations in database queue.' };
@@ -168,6 +174,7 @@ class AutomationWorker {
 
     let successCount = 0;
     let failureCount = 0;
+    let deferredCount = 0;
     const details: Array<{ id: number; contactName: string; status: string; error?: string }> = [];
 
     for (const job of dueJobs) {
@@ -178,15 +185,15 @@ class AutomationWorker {
       // if database rows were corrupted or an ID was tampered with.
       if (automation.ownerUserId !== contact.ownerUserId || automation.ownerUserId !== template.ownerUserId) {
         const errorMsg = 'Tenant ownership mismatch. Automation, contact and template must belong to the same business.';
-        await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
-        await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+        await this.db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+        await this.db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
         failureCount++;
         details.push({ id: automation.id, contactName: contact.name, status: 'FAILED', error: errorMsg });
         continue;
       }
 
       // Lock job
-      const lockResult = await db
+      const lockResult = await this.db
         .update(automations)
         .set({
           status: 'PROCESSING',
@@ -207,8 +214,25 @@ class AutomationWorker {
         continue;
       }
 
-      const res = await this.executeJob(automation, contact, template, undefined, allowSimulation);
-      if (['ACCEPTED','SENT'].includes(res.status)) {
+      // Conservative pacing, below Cloud API throughput. A recipient failure must
+      // not abandon the remainder of a durable bulk batch.
+      await this.pause(250);
+      let res: {status:string; errorMessage?:string};
+      try {
+        res = await this.executeJob(automation, contact, template, undefined, allowSimulation);
+      } catch (error: any) {
+        const note = 'Processing ended without a confirmed result. Check the recipient and delivery updates before creating another attempt.';
+        // Never replay a possibly accepted network send after an unexpected error.
+        // Guard the state so an early delivered/failed webhook is not overwritten.
+        await this.db.update(automations).set({status:'ACCEPTED', variables:{...(automation.variables||{}),__meta_message_status:'unknown',__delivery_note:note},
+          errorMessage:note,executedAt:new Date(),updatedAt:new Date()})
+          .where(and(eq(automations.id,automation.id),eq(automations.status,'PROCESSING')));
+        console.warn('[Worker] Attempt needs delivery reconciliation:', automation.id, error?.message);
+        res = {status:'ACCEPTED',errorMessage:note};
+      }
+      if (res.status === 'SCHEDULED') {
+        deferredCount++;
+      } else if (['ACCEPTED','SENT'].includes(res.status)) {
         successCount++;
       } else {
         failureCount++;
@@ -222,11 +246,12 @@ class AutomationWorker {
     }
 
     return {
-      processed: dueJobs.length,
+      processed: details.length,
       successCount,
       failureCount,
+      deferredCount,
       details,
-      message: `Processed ${dueJobs.length} automation(s): ${successCount} accepted for delivery, ${failureCount} failed.`,
+      message: `Processed ${details.length} automation(s): ${successCount} accepted for delivery, ${failureCount} failed, ${deferredCount} deferred for rate limits.`,
     };
   }
 
@@ -314,31 +339,47 @@ class AutomationWorker {
     const owner=await pool.query('SELECT is_active,approval_status FROM users WHERE id=$1',[automation.ownerUserId]);
     if(!owner.rows[0]?.is_active || !['ACTIVE','APPROVED'].includes(owner.rows[0]?.approval_status)) {
       const errorMessage='Business account is inactive. Automation stopped.';
-      await db.update(automations).set({status:'CANCELLED',errorMessage,updatedAt:now}).where(eq(automations.id,automation.id));
+      await this.db.update(automations).set({status:'CANCELLED',errorMessage,updatedAt:now}).where(eq(automations.id,automation.id));
       return {status:'CANCELLED',errorMessage};
     }
 
     // Validation 1: Verify contact opt-in
     if (!contact.optIn) {
       const errorMsg = `Contact ${contact.name} (${contact.phone}) has opted out of WhatsApp messages.`;
-      await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+      await this.db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+      await this.db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
       return { status: 'FAILED', errorMessage: errorMsg };
     }
 
     // Validation 2: Verify template approval
     if (template.status !== 'APPROVED') {
       const errorMsg = `Template '${template.name}' is not in APPROVED status (current: ${template.status}).`;
-      await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+      await this.db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+      await this.db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
       return { status: 'FAILED', errorMessage: errorMsg };
     }
 
     const snapshot=automation.templateSnapshot as any;
     if(snapshot?.components && semanticComponents(snapshot.components)!==semanticComponents(template.components as any[])) {
       const errorMsg='Template content changed after this message was scheduled. Review the current approved template and schedule a new message.';
-      await db.update(automations).set({status:'FAILED',errorMessage:errorMsg,executedAt:now,updatedAt:now}).where(eq(automations.id,automation.id));
+      await this.db.update(automations).set({status:'FAILED',errorMessage:errorMsg,executedAt:now,updatedAt:now}).where(eq(automations.id,automation.id));
       return {status:'FAILED',errorMessage:errorMsg};
+    }
+
+    // A separate marketing attempt may have failed after this job was queued.
+    // Do not hammer the same recipient or stop other recipients' jobs.
+    if (template.category === 'MARKETING') {
+      const restrictions = await this.db.select().from(messages).where(and(
+        eq(messages.ownerUserId,automation.ownerUserId),eq(messages.contactId,contact.id),
+        eq(messages.errorCode,'131049'),gte(messages.failedAt,new Date(Date.now()-86400000))));
+      const retryAfter = restrictions.map(row=>marketingRetryAfter(row)).filter((d):d is Date=>!!d)
+        .sort((a,b)=>b.getTime()-a.getTime())[0];
+      if (retryAfter) {
+        await this.db.update(automations).set({status:'FAILED',errorMessage:marketingLimitMessage,
+          variables:{...(automation.variables||{}),__marketing_retry_after:retryAfter.toISOString()},executedAt:now,updatedAt:now})
+          .where(eq(automations.id,automation.id));
+        return {status:'FAILED',errorMessage:marketingLimitMessage};
+      }
     }
 
     // Validation 3: Package and message quota are rechecked at execution time.
@@ -346,8 +387,8 @@ class AutomationWorker {
       await assertMessageCapacity(automation.ownerUserId, 1, { reserveScheduled: false });
     } catch (quotaError: any) {
       const errorMsg = quotaError?.message || 'Active package/message quota required.';
-      await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+      await this.db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+      await this.db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
       await createNotification({ userId: automation.ownerUserId, targetRole: 'BUSINESS', type: 'BILLING', title: 'Automation blocked by package limit', message: errorMsg, entityType: 'AUTOMATION', entityId: automation.id });
       return { status: 'FAILED', errorMessage: errorMsg };
     }
@@ -364,8 +405,8 @@ class AutomationWorker {
         // Run simulated delivery
         const simulatedWamid = `wamid.HBg${Date.now()}_simulated`;
         const simNote = 'Sandbox Simulation: Processed locally without Meta API credentials. Not sent to physical mobile device.';
-        await db.update(automations).set({ status: 'SIMULATED', executedAt: now, errorMessage: simNote, updatedAt: now }).where(eq(automations.id, automation.id));
-        await db.insert(messages).values({
+        await this.db.update(automations).set({ status: 'SIMULATED', executedAt: now, errorMessage: simNote, updatedAt: now }).where(eq(automations.id, automation.id));
+        await this.db.insert(messages).values({
           automationId: automation.id,
           contactId: contact.id,
           ownerUserId: automation.ownerUserId,
@@ -379,7 +420,7 @@ class AutomationWorker {
           status: 'SIMULATED',
           sentAt: null,
         });
-        await db.insert(automationExecutions).values({
+        await this.db.insert(automationExecutions).values({
           automationId: automation.id,
           status: 'SIMULATED',
           responsePayload: { simulated: true, wamid: simulatedWamid, note: simNote },
@@ -393,8 +434,8 @@ class AutomationWorker {
         errorMsg = 'Access Token is saved for this business, but Phone Number ID is missing. Please complete WhatsApp Settings.';
       }
 
-      await db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
+      await this.db.update(automations).set({ status: 'FAILED', errorMessage: errorMsg, executedAt: now, updatedAt: now }).where(eq(automations.id, automation.id));
+      await this.db.insert(automationExecutions).values({ automationId: automation.id, status: 'FAILED', errorMessage: errorMsg, executedAt: now });
       return { status: 'FAILED', errorMessage: errorMsg };
     }
 
@@ -413,10 +454,19 @@ class AutomationWorker {
       trackingId: `greetsync:${automation.ownerUserId}:${automation.id}`,
     });
 
+    const retry = !sendResult.success && sendResult.rawResponse?.error
+      ? sendRetryPlan(sendResult.errorCode, automation.variables) : null;
+    if (retry) {
+      await this.db.update(automations).set({status:'SCHEDULED',scheduledAt:retry.scheduledAt,
+        variables:retry.variables,lockedAt:null,errorMessage:'WhatsApp rate limit. This queued message will retry automatically.',updatedAt:new Date()})
+        .where(and(eq(automations.id,automation.id),eq(automations.status,'PROCESSING')));
+      return {status:'SCHEDULED'};
+    }
+
     if(sendResult.errorCode==='SEND_OUTCOME_UNKNOWN') {
       const completedAt=new Date();
       const vars={...(automation.variables||{}),__meta_message_status:'unknown',__delivery_note:sendResult.error!};
-      await db.transaction(async tx=>{
+      await this.db.transaction(async tx=>{
         await tx.insert(messages).values({ownerUserId:automation.ownerUserId,automationId:automation.id,contactId:contact.id,direction:'OUTBOUND',messageType:'TEMPLATE',templateName:template.name,templateLanguage:template.language,variables:vars,status:'ACCEPTED',errorCode:sendResult.errorCode,errorMessage:sendResult.error,sentAt:null});
         await tx.update(automations).set({status:'ACCEPTED',variables:vars,executedAt:completedAt,errorMessage:sendResult.error,updatedAt:completedAt}).where(eq(automations.id,automation.id));
       });
@@ -430,7 +480,7 @@ class AutomationWorker {
 
       const completedAt=new Date();
       const savedVars=acceptanceVariables((automation.variables||{}) as Record<string,string>,sendResult.rawResponse,tracking.warning);
-      await db.transaction(async tx=>{
+      await this.db.transaction(async tx=>{
       await tx.update(automations).set({ status: 'ACCEPTED', variables: savedVars, executedAt: completedAt, errorMessage: successNote, updatedAt: completedAt }).where(eq(automations.id, automation.id));
       await tx.insert(messages).values({
         automationId: automation.id,
@@ -480,8 +530,8 @@ class AutomationWorker {
       return { status: 'ACCEPTED' };
     } else {
       const errorMsg = sendResult.error || 'Meta API error sending template message';
-      await db.update(automations).set({ status: 'FAILED', executedAt: now, errorMessage: errorMsg, updatedAt: now }).where(eq(automations.id, automation.id));
-      await db.insert(messages).values({
+      await this.db.update(automations).set({ status: 'FAILED', executedAt: now, errorMessage: errorMsg, updatedAt: now }).where(eq(automations.id, automation.id));
+      await this.db.insert(messages).values({
         automationId: automation.id,
         contactId: contact.id,
         ownerUserId: automation.ownerUserId,
@@ -496,7 +546,7 @@ class AutomationWorker {
         errorMessage: errorMsg,
         failedAt: now,
       });
-      await db.insert(automationExecutions).values({
+      await this.db.insert(automationExecutions).values({
         automationId: automation.id,
         status: 'FAILED',
         errorMessage: errorMsg,

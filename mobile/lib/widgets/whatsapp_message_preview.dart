@@ -7,9 +7,14 @@ import 'template_media_preview.dart';
 
 final savedMediaPreviewProvider = FutureProvider.autoDispose
     .family<Map<String, dynamic>, String>((ref, id) async {
+      final admin = ref.watch(authProvider).user?.role == 'admin';
       final data = await ref
           .read(apiClientProvider)
-          .get('/api/whatsapp/media/$id/preview');
+          .get(
+            admin
+                ? '/api/admin/message-media/$id/preview'
+                : '/api/whatsapp/media/$id/preview',
+          );
       return (data as Map).cast<String, dynamic>();
     });
 

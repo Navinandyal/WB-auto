@@ -2,47 +2,692 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../providers/providers.dart';
-import '../theme/business_theme.dart';
+import '../widgets/admin_ui.dart';
 import '../widgets/common.dart';
 
-class AdminPackagesScreen extends ConsumerWidget {
+class AdminPackagesScreen extends ConsumerStatefulWidget {
   const AdminPackagesScreen({super.key});
-  int _i(dynamic v)=>int.tryParse('$v')??0;
-  String _money(dynamic p)=>NumberFormat.currency(locale:'en_IN',symbol:'₹',decimalDigits:0).format(_i(p)/100);
+  @override
+  ConsumerState<AdminPackagesScreen> createState() =>
+      _AdminPackagesScreenState();
+}
 
-  @override Widget build(BuildContext context,WidgetRef ref){
-    final packages=ref.watch(adminPackagesProvider), subscriptions=ref.watch(adminSubscriptionsProvider);
-    return RefreshIndicator(
-      onRefresh:()async{ref.invalidate(adminPackagesProvider);ref.invalidate(adminSubscriptionsProvider);await Future.wait([ref.read(adminPackagesProvider.future),ref.read(adminSubscriptionsProvider.future)]);},
-      child:ListView(padding:const EdgeInsets.fromLTRB(18,10,18,36),children:[
-        Row(children:[const Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('Packages',style:TextStyle(fontSize:27,fontWeight:FontWeight.w900,color:Color(0xFF071A63))),SizedBox(height:4),Text('Create plans, quotas, pricing and validity.',style:TextStyle(color:BusinessColors.muted))])),FilledButton.icon(onPressed:()=>_editor(context,ref),icon:const Icon(Icons.add),label:const Text('New Package'))]),
-        const SizedBox(height:18),
-        subscriptions.when(loading:()=>const LinearProgressIndicator(),error:(e,_)=>ErrorState(e),data:(rows){final pending=rows.where((r)=>'${r['status']}'=='PENDING').toList();return Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Row(children:[const Expanded(child:SectionTitle('Activation Requests')),Container(padding:const EdgeInsets.symmetric(horizontal:9,vertical:5),decoration:BoxDecoration(color:Colors.orange.withOpacity(.12),borderRadius:BorderRadius.circular(20)),child:Text('${pending.length}',style:const TextStyle(color:Colors.orange,fontWeight:FontWeight.w900)))]),const SizedBox(height:9),if(pending.isEmpty)const Card(child:Padding(padding:EdgeInsets.all(16),child:Text('No pending package requests.')))else ...pending.map((r)=>Card(child:ListTile(leading:const SoftIcon(Icons.receipt_long_outlined),title:Text('${r['businessName']??r['userName']??'Business'}',style:const TextStyle(fontWeight:FontWeight.w900)),subtitle:Text('${r['packageName']} • ${_money(r['pricePaise'])}\n${r['phone']??''}'),isThreeLine:true,trailing:PopupMenuButton<String>(onSelected:(v)=>v=='activate'?_activate(context,ref,_i(r['id'])):_reject(context,ref,_i(r['id'])),itemBuilder:(_)=>const [PopupMenuItem(value:'activate',child:Text('Activate package')),PopupMenuItem(value:'reject',child:Text('Reject request'))])))),const SizedBox(height:18)]);}),
-        const SectionTitle('Package Catalogue'),const SizedBox(height:9),
-        packages.when(loading:()=>const Center(child:CircularProgressIndicator()),error:(e,_)=>ErrorState(e),data:(rows)=>rows.isEmpty?const Card(child:Padding(padding:EdgeInsets.all(22),child:Text('No packages created yet.'))):Column(children:rows.map((p)=>_packageCard(context,ref,p)).toList())),
-        const SizedBox(height:18),const SectionTitle('Subscription History'),const SizedBox(height:9),
-        subscriptions.when(loading:()=>const SizedBox.shrink(),error:(_,__)=>const SizedBox.shrink(),data:(rows)=>Column(children:rows.where((r)=>'${r['status']}'!='PENDING').take(30).map((r)=>Card(child:ListTile(leading:const SoftIcon(Icons.workspace_premium_outlined),title:Text('${r['businessName']??r['userName']} • ${r['packageName']}',style:const TextStyle(fontWeight:FontWeight.w800)),subtitle:Text('${r['status']} • ${_money(r['pricePaise'])}${r['endsAt']==null?'':' • until ${_date(r['endsAt'])}'}')))).toList())),
-      ]),
+class _AdminPackagesScreenState extends ConsumerState<AdminPackagesScreen> {
+  final searchController = TextEditingController();
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  String search = '';
+  int? businessId;
+  int _i(dynamic value) => int.tryParse('$value') ?? 0;
+  String _money(dynamic value) => NumberFormat.currency(
+    locale: 'en_IN',
+    symbol: '₹',
+    decimalDigits: 2,
+  ).format(_i(value) / 100);
+  @override
+  Widget build(BuildContext context) {
+    final packages = ref.watch(adminPackagesProvider),
+        subscriptions = ref.watch(adminSubscriptionsProvider);
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(text: 'Requests'),
+              Tab(text: 'Plans'),
+              Tab(text: 'History'),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _subscriptions(subscriptions, true),
+                RefreshIndicator(
+                  onRefresh: () async =>
+                      ref.refresh(adminPackagesProvider.future),
+                  child: ListView(
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      AdminHeader(
+                        'Subscription plans',
+                        'Set pricing, validity and limits for business owners.',
+                        icon: Icons.workspace_premium_outlined,
+                        action: FilledButton.icon(
+                          onPressed: () => _editor(),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Create plan'),
+                        ),
+                      ),
+                      packages.when(
+                        loading: () => const LinearProgressIndicator(),
+                        error: (e, _) => ErrorState(
+                          e,
+                          onRetry: () => ref.invalidate(adminPackagesProvider),
+                        ),
+                        data: (rows) => Column(
+                          children: [
+                            if (rows.isEmpty)
+                              const EmptyState('No plans created yet.'),
+                            ...rows.map(_packageCard),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _subscriptions(subscriptions, false),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _packageCard(BuildContext context,WidgetRef ref,Map<String,dynamic> p){final benefits=(p['benefits'] as List? ?? const []).map((e)=>'$e').toList();final active=p['isActive']!=false;return Card(child:Padding(padding:const EdgeInsets.all(15),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Row(children:[SoftIcon('${p['packageType']}'=='MESSAGE_ADDON'?Icons.add_chart:Icons.workspace_premium_outlined),const SizedBox(width:10),Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('${p['name']}',style:const TextStyle(fontSize:17,fontWeight:FontWeight.w900)),Text('${p['packageType']} • ${p['durationMonths']} month(s)',style:const TextStyle(color:BusinessColors.muted,fontSize:11))])),Text(_money(p['pricePaise']),style:const TextStyle(fontWeight:FontWeight.w900,fontSize:17))]),const SizedBox(height:10),Wrap(spacing:7,runSpacing:7,children:[_pill(_i(p['messageLimit'])<=0?'Unlimited messages':'${p['messageLimit']} messages'),if('${p['packageType']}'!='MESSAGE_ADDON')_pill(_i(p['contactLimit'])<=0?'Unlimited contacts':'${p['contactLimit']} contacts'),if('${p['packageType']}'!='MESSAGE_ADDON')_pill(_i(p['automationLimit'])<=0?'Unlimited automations':'${p['automationLimit']} automations'),_pill(active?'Enabled':'Disabled')]),if(benefits.isNotEmpty)...[const SizedBox(height:10),Text(benefits.join(' • '),style:const TextStyle(color:BusinessColors.muted,fontSize:12))],const SizedBox(height:12),Row(children:[Expanded(child:OutlinedButton.icon(onPressed:()=>_editor(context,ref,existing:p),icon:const Icon(Icons.edit_outlined),label:const Text('Edit'))),const SizedBox(width:9),Expanded(child:OutlinedButton.icon(onPressed:active?()=>_disable(context,ref,_i(p['id'])):null,icon:const Icon(Icons.block),label:Text(active?'Disable':'Disabled')))])])));}
-  Widget _pill(String s)=>Container(padding:const EdgeInsets.symmetric(horizontal:8,vertical:4),decoration:BoxDecoration(color:const Color(0xFFF2F6FA),borderRadius:BorderRadius.circular(20)),child:Text(s,style:const TextStyle(fontSize:10,fontWeight:FontWeight.w800)));
-  String _date(dynamic v){final d=DateTime.tryParse('$v')?.toLocal();return d==null?'—':DateFormat('dd MMM yyyy').format(d);}
+  Widget _subscriptions(
+    AsyncValue<List<Map<String, dynamic>>> state,
+    bool pending,
+  ) => RefreshIndicator(
+    onRefresh: () async => ref.refresh(adminSubscriptionsProvider.future),
+    child: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        AdminHeader(
+          pending ? 'Package requests' : 'Subscription history',
+          pending
+              ? 'Open a request to review business and owner details before making a decision.'
+              : 'Track each business’s activated, rejected and expired subscriptions.',
+          icon: Icons.receipt_long_outlined,
+        ),
+        AdminBusinessFilter(
+          selected: businessId,
+          onChanged: (v) => setState(() => businessId = v),
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          controller: searchController,
+          decoration: const InputDecoration(
+            prefixIcon: Icon(Icons.search),
+            hintText: 'Search business, owner or plan',
+          ),
+          onChanged: (v) => setState(() => search = v),
+        ),
+        const SizedBox(height: 18),
+        state.when(
+          loading: () => const LinearProgressIndicator(),
+          error: (e, _) => ErrorState(
+            e,
+            onRetry: () => ref.invalidate(adminSubscriptionsProvider),
+          ),
+          data: (all) {
+            final q = search.toLowerCase().trim();
+            final rows = all
+                .where(
+                  (r) =>
+                      (('${r['status']}' == 'PENDING') == pending) &&
+                      (businessId == null || r['userId'] == businessId) &&
+                      (q.isEmpty ||
+                          [
+                            'businessName',
+                            'userName',
+                            'phone',
+                            'packageName',
+                          ].any(
+                            (k) => '${r[k] ?? ''}'.toLowerCase().contains(q),
+                          )),
+                )
+                .toList();
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${rows.length} ${pending ? 'requests' : 'subscriptions'}',
+                  style: const TextStyle(
+                    color: adminMuted,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (rows.isEmpty)
+                  const EmptyState('No matching subscriptions.'),
+                ...rows.map(
+                  (r) => Card(
+                    margin: const EdgeInsets.only(bottom: 14),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(18),
+                      onTap: () => _review(r),
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.business_outlined, size: 28),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    '${r['businessName'] ?? r['userName'] ?? 'Business'}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ),
+                                const Icon(Icons.chevron_right),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              'Owner · ${r['userName'] ?? '—'}',
+                              style: const TextStyle(color: adminMuted),
+                            ),
+                            const Divider(height: 26),
+                            Text(
+                              '${r['packageName']} · ${_money(r['pricePaise'])}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 8,
+                              children: [
+                                AdminBadge('${r['status']}'),
+                                Text(
+                                  pending
+                                      ? 'Review owner & request'
+                                      : 'Valid until ${adminDate(r['endsAt'])}',
+                                  style: const TextStyle(
+                                    color: adminMuted,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    ),
+  );
+  Widget _packageCard(Map<String, dynamic> p) => AdminPanel(
+    title: '${p['name']}',
+    trailing: AdminBadge(p['isActive'] != false ? 'AVAILABLE' : 'DISABLED'),
+    children: [
+      Text(
+        _money(p['pricePaise']),
+        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+      ),
+      const SizedBox(height: 5),
+      Text(
+        '${p['durationMonths']} month(s) · ${p['packageType'] == 'MESSAGE_ADDON' ? 'Message add-on' : 'Base plan'}',
+        style: const TextStyle(color: adminMuted),
+      ),
+      if ('${p['description'] ?? ''}'.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text('${p['description']}'),
+      ],
+      const SizedBox(height: 14),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _quota(p['messageLimit'], 'messages'),
+          if (p['packageType'] != 'MESSAGE_ADDON') ...[
+            _quota(p['contactLimit'], 'contacts'),
+            _quota(p['automationLimit'], 'active schedules'),
+          ],
+        ],
+      ),
+      const SizedBox(height: 12),
+      ...(p['benefits'] as List? ?? const []).map(
+        (b) => Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.check_circle_outline, size: 17),
+              const SizedBox(width: 8),
+              Expanded(child: Text('$b')),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 14),
+      Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          OutlinedButton.icon(
+            onPressed: () => _editor(existing: p),
+            icon: const Icon(Icons.edit_outlined),
+            label: const Text('Edit plan'),
+          ),
+          if (p['isActive'] != false)
+            TextButton(
+              onPressed: () => _disable(p),
+              child: const Text('Disable plan'),
+            ),
+        ],
+      ),
+    ],
+  );
+  Widget _quota(dynamic value, String unit) =>
+      Chip(label: Text(_i(value) <= 0 ? 'Unlimited $unit' : '$value $unit'));
+  Future<void> _editor({Map<String, dynamic>? existing}) async {
+    final changed = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AdminPackageEditorScreen(existing: existing),
+      ),
+    );
+    if (changed == true) ref.invalidate(adminPackagesProvider);
+  }
 
-  Future<void> _editor(BuildContext context,WidgetRef ref,{Map<String,dynamic>? existing})async{final changed=await Navigator.push<bool>(context,MaterialPageRoute(builder:(_)=>AdminPackageEditorScreen(existing:existing)));if(changed==true){ref.invalidate(adminPackagesProvider);ref.invalidate(adminSubscriptionsProvider);}}
-  Future<void> _activate(BuildContext c,WidgetRef r,int id)async{try{await r.read(apiClientProvider).post('/api/admin/subscriptions/$id/activate',data:{});r.invalidate(adminSubscriptionsProvider);if(c.mounted)showAppMessage(c,'Package activated.');}catch(e){if(c.mounted)showAppMessage(c,'$e',error:true);}}
-  Future<void> _reject(BuildContext c,WidgetRef r,int id)async{try{await r.read(apiClientProvider).post('/api/admin/subscriptions/$id/reject',data:{});r.invalidate(adminSubscriptionsProvider);if(c.mounted)showAppMessage(c,'Package request rejected.');}catch(e){if(c.mounted)showAppMessage(c,'$e',error:true);}}
-  Future<void> _disable(BuildContext c,WidgetRef r,int id)async{try{await r.read(apiClientProvider).delete('/api/admin/packages/$id');r.invalidate(adminPackagesProvider);if(c.mounted)showAppMessage(c,'Package disabled.');}catch(e){if(c.mounted)showAppMessage(c,'$e',error:true);}}
+  Future<void> _disable(Map p) async {
+    if (!await adminConfirm(
+          context,
+          'Disable ${p['name']}?',
+          'This plan will no longer be available for new requests.',
+        ) ||
+        !mounted)
+      return;
+    try {
+      await ref
+          .read(apiClientProvider)
+          .delete('/api/admin/packages/${p['id']}');
+      ref.invalidate(adminPackagesProvider);
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _review(Map<String, dynamic> r) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => AdminPackageReviewScreen(request: r)),
+    );
+    ref.invalidate(adminSubscriptionsProvider);
+  }
 }
 
-class AdminPackageEditorScreen extends ConsumerStatefulWidget{const AdminPackageEditorScreen({super.key,this.existing});final Map<String,dynamic>? existing;@override ConsumerState<AdminPackageEditorScreen> createState()=>_AdminPackageEditorScreenState();}
-class _AdminPackageEditorScreenState extends ConsumerState<AdminPackageEditorScreen>{
-  final form=GlobalKey<FormState>();late final TextEditingController name,desc,benefits,messages,contacts,automations,price,duration;late String type;late bool active;bool saving=false;
-  int _i(dynamic v)=>int.tryParse('$v')??0;
-  @override void initState(){super.initState();final p=widget.existing??{};name=TextEditingController(text:'${p['name']??''}');desc=TextEditingController(text:'${p['description']??''}');benefits=TextEditingController(text:(p['benefits'] as List? ?? const []).join('\n'));messages=TextEditingController(text:'${p['messageLimit']??1000}');contacts=TextEditingController(text:'${p['contactLimit']??10000}');automations=TextEditingController(text:'${p['automationLimit']??1000}');price=TextEditingController(text:(_i(p['pricePaise'])/100).toStringAsFixed(_i(p['pricePaise'])%100==0?0:2));duration=TextEditingController(text:'${p['durationMonths']??1}');type='${p['packageType']??'BASE'}';active=p['isActive']!=false;}
-  @override void dispose(){for(final c in[name,desc,benefits,messages,contacts,automations,price,duration])c.dispose();super.dispose();}
-  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:Text(widget.existing==null?'Create Package':'Edit Package')),body:Form(key:form,child:ListView(padding:const EdgeInsets.all(18),children:[TextFormField(controller:name,decoration:const InputDecoration(labelText:'Package name *'),validator:(v)=>(v??'').trim().length<2?'Enter package name':null),const SizedBox(height:12),DropdownButtonFormField<String>(initialValue:type,decoration:const InputDecoration(labelText:'Package type'),items:const [DropdownMenuItem(value:'BASE',child:Text('Base Package')),DropdownMenuItem(value:'MESSAGE_ADDON',child:Text('Message Add-on'))],onChanged:(v)=>setState(()=>type=v??'BASE')),const SizedBox(height:12),TextFormField(controller:desc,minLines:2,maxLines:4,decoration:const InputDecoration(labelText:'Description')),const SizedBox(height:12),TextFormField(controller:benefits,minLines:4,maxLines:8,decoration:const InputDecoration(labelText:'Benefits',helperText:'One benefit per line')),const SizedBox(height:12),Row(children:[Expanded(child:_number(messages,'Message limit',min:type=='MESSAGE_ADDON'?1:0)),const SizedBox(width:10),Expanded(child:_number(contacts,'Contact limit'))]),const SizedBox(height:12),Row(children:[Expanded(child:_number(automations,'Active automation limit')),const SizedBox(width:10),Expanded(child:_number(duration,'Validity (months)',min:1))]),const SizedBox(height:12),TextFormField(controller:price,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Price (₹) *',prefixText:'₹ '),validator:(v)=>double.tryParse((v??'').trim())==null?'Enter valid price':null),const SizedBox(height:8),SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Package enabled',style:TextStyle(fontWeight:FontWeight.w800)),value:active,onChanged:(v)=>setState(()=>active=v)),const SizedBox(height:16),FilledButton(onPressed:saving?null:_save,child:saving?const CircularProgressIndicator(color:Colors.white):Text(widget.existing==null?'Create Package':'Save Changes'))])));
-  Widget _number(TextEditingController c,String label,{int min=0})=>TextFormField(controller:c,keyboardType:TextInputType.number,decoration:InputDecoration(labelText:label,helperText:min==0?'0 = unlimited':null),validator:(v){final n=int.tryParse((v??'').trim());if(n==null||n<min)return 'Enter ${min==0?'0 or more':'at least $min'}';return null;});
-  Future<void> _save()async{if(!(form.currentState?.validate()??false))return;setState(()=>saving=true);try{final payload={'name':name.text.trim(),'description':desc.text.trim(),'packageType':type,'benefits':benefits.text.split('\n').map((e)=>e.trim()).where((e)=>e.isNotEmpty).toList(),'messageLimit':int.parse(messages.text),'contactLimit':int.parse(contacts.text),'automationLimit':int.parse(automations.text),'pricePaise':(double.parse(price.text)*100).round(),'durationMonths':int.parse(duration.text),'isActive':active};if(widget.existing==null)await ref.read(apiClientProvider).post('/api/admin/packages',data:payload);else await ref.read(apiClientProvider).put('/api/admin/packages/${widget.existing!['id']}',data:payload);if(mounted)Navigator.pop(context,true);}catch(e){if(mounted)showAppMessage(context,'$e',error:true);if(mounted)setState(()=>saving=false);}}
+class AdminPackageReviewScreen extends ConsumerStatefulWidget {
+  const AdminPackageReviewScreen({super.key, required this.request});
+  final Map<String, dynamic> request;
+  @override
+  ConsumerState<AdminPackageReviewScreen> createState() =>
+      _AdminPackageReviewScreenState();
+}
+
+class _AdminPackageReviewScreenState
+    extends ConsumerState<AdminPackageReviewScreen> {
+  bool busy = false;
+  final notes = TextEditingController();
+  @override
+  void dispose() {
+    notes.dispose();
+    super.dispose();
+  }
+
+  Future<void> _decide(String action) async {
+    final r = widget.request;
+    if (!await adminConfirm(
+          context,
+          action == 'activate'
+              ? 'Activate this package?'
+              : 'Reject this request?',
+          '${r['packageName']} for ${r['businessName'] ?? r['userName']} (${r['userName']}). ${action == 'activate' ? 'Confirm that payment and the owner details have been reviewed.' : 'The owner will be notified of this decision.'}',
+        ) ||
+        !mounted)
+      return;
+    setState(() => busy = true);
+    try {
+      await ref
+          .read(apiClientProvider)
+          .post(
+            '/api/admin/subscriptions/${r['id']}/$action',
+            data: {'notes': notes.text.trim()},
+          );
+      ref.invalidate(adminSubscriptionsProvider);
+      if (mounted) {
+        showAppMessage(
+          context,
+          action == 'activate' ? 'Package activated.' : 'Request rejected.',
+        );
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.request;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Review package request')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          AdminHeader(
+            '${r['businessName'] ?? r['userName']}',
+            'Business owner and requested subscription.',
+            icon: Icons.workspace_premium_outlined,
+          ),
+          AdminPanel(
+            title: 'Business owner',
+            children: [
+              adminInfo('Owner name', r['userName']),
+              adminInfo('Phone', r['phone']),
+              adminInfo('Email', r['email']),
+              adminInfo('Business name', r['businessName']),
+              adminInfo('Address', r['businessAddress']),
+              adminInfo('Business status', r['businessStatus']),
+              adminInfo('Business ID', r['userId']),
+            ],
+          ),
+          AdminPanel(
+            title: 'Requested plan',
+            trailing: AdminBadge('${r['status']}'),
+            children: [
+              adminInfo('Plan', r['packageName']),
+              adminInfo(
+                'Price',
+                NumberFormat.currency(
+                  locale: 'en_IN',
+                  symbol: '₹',
+                ).format((r['pricePaise'] as num? ?? 0) / 100),
+              ),
+              adminInfo('Plan type', r['packageType']),
+              adminInfo('Validity', '${r['durationMonths']} month(s)'),
+              adminInfo(
+                'Message allowance',
+                (r['messageLimit'] as num? ?? 0) <= 0
+                    ? 'Unlimited'
+                    : '${r['messageLimit']}',
+              ),
+              adminInfo('Requested', adminDate(r['createdAt'])),
+              adminInfo('Starts', adminDate(r['startsAt'])),
+              adminInfo('Ends', adminDate(r['endsAt'])),
+              if ('${r['notes'] ?? ''}'.isNotEmpty)
+                adminInfo('Request notes', r['notes']),
+            ],
+          ),
+          if (r['status'] == 'PENDING') ...[
+            TextField(
+              controller: notes,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Decision notes (optional)',
+                hintText: 'Payment reference or reason for the decision',
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'Review the business owner and payment details before activating the plan.',
+              style: TextStyle(color: adminMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 18),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                OutlinedButton(
+                  onPressed: busy ? null : () => _decide('reject'),
+                  child: const Text('Reject request'),
+                ),
+                FilledButton.icon(
+                  onPressed: busy ? null : () => _decide('activate'),
+                  icon: const Icon(Icons.check_circle_outline),
+                  label: Text(busy ? 'Saving…' : 'Activate package'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class AdminPackageEditorScreen extends ConsumerStatefulWidget {
+  const AdminPackageEditorScreen({super.key, this.existing});
+  final Map<String, dynamic>? existing;
+  @override
+  ConsumerState<AdminPackageEditorScreen> createState() =>
+      _AdminPackageEditorScreenState();
+}
+
+class _AdminPackageEditorScreenState
+    extends ConsumerState<AdminPackageEditorScreen> {
+  final form = GlobalKey<FormState>();
+  late final TextEditingController name,
+      desc,
+      benefits,
+      messages,
+      contacts,
+      automations,
+      price,
+      duration;
+  late String type;
+  late bool active;
+  bool saving = false;
+  int _i(dynamic v) => int.tryParse('$v') ?? 0;
+  @override
+  void initState() {
+    super.initState();
+    final p = widget.existing ?? {};
+    name = TextEditingController(text: '${p['name'] ?? ''}');
+    desc = TextEditingController(text: '${p['description'] ?? ''}');
+    benefits = TextEditingController(
+      text: (p['benefits'] as List? ?? const []).join('\n'),
+    );
+    messages = TextEditingController(text: '${p['messageLimit'] ?? 1000}');
+    contacts = TextEditingController(text: '${p['contactLimit'] ?? 10000}');
+    automations = TextEditingController(
+      text: '${p['automationLimit'] ?? 1000}',
+    );
+    price = TextEditingController(
+      text: (_i(p['pricePaise']) / 100).toStringAsFixed(
+        _i(p['pricePaise']) % 100 == 0 ? 0 : 2,
+      ),
+    );
+    duration = TextEditingController(text: '${p['durationMonths'] ?? 1}');
+    type = '${p['packageType'] ?? 'BASE'}';
+    active = p['isActive'] != false;
+  }
+
+  @override
+  void dispose() {
+    for (final c in [
+      name,
+      desc,
+      benefits,
+      messages,
+      contacts,
+      automations,
+      price,
+      duration,
+    ])
+      c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Text(widget.existing == null ? 'Create Package' : 'Edit Package'),
+    ),
+    body: Form(
+      key: form,
+      child: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          const AdminHeader(
+            'Plan details',
+            'Set benefits, quotas, price and validity.',
+            icon: Icons.workspace_premium_outlined,
+          ),
+          TextFormField(
+            controller: name,
+            decoration: const InputDecoration(labelText: 'Package name *'),
+            validator: (v) =>
+                (v ?? '').trim().length < 2 ? 'Enter package name' : null,
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: type,
+            decoration: const InputDecoration(labelText: 'Package type'),
+            items: const [
+              DropdownMenuItem(value: 'BASE', child: Text('Base Package')),
+              DropdownMenuItem(
+                value: 'MESSAGE_ADDON',
+                child: Text('Message Add-on'),
+              ),
+            ],
+            onChanged: (v) => setState(() => type = v ?? 'BASE'),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: desc,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(labelText: 'Description'),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: benefits,
+            minLines: 4,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              labelText: 'Benefits',
+              helperText: 'One benefit per line',
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _number(
+                  messages,
+                  'Message limit',
+                  min: type == 'MESSAGE_ADDON' ? 1 : 0,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: _number(contacts, 'Contact limit')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _number(automations, 'Active automation limit')),
+              const SizedBox(width: 10),
+              Expanded(child: _number(duration, 'Validity (months)', min: 1)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: price,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Price (₹) *',
+              prefixText: '₹ ',
+            ),
+            validator: (v) => double.tryParse((v ?? '').trim()) == null
+                ? 'Enter valid price'
+                : null,
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Package enabled',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            value: active,
+            onChanged: (v) => setState(() => active = v),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: saving ? null : _save,
+            child: saving
+                ? const CircularProgressIndicator(color: Colors.white)
+                : Text(
+                    widget.existing == null ? 'Create Package' : 'Save Changes',
+                  ),
+          ),
+        ],
+      ),
+    ),
+  );
+  Widget _number(TextEditingController c, String label, {int min = 0}) =>
+      TextFormField(
+        controller: c,
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: min == 0 ? '0 = unlimited' : null,
+        ),
+        validator: (v) {
+          final n = int.tryParse((v ?? '').trim());
+          if (n == null || n < min)
+            return 'Enter ${min == 0 ? '0 or more' : 'at least $min'}';
+          return null;
+        },
+      );
+  Future<void> _save() async {
+    if (!(form.currentState?.validate() ?? false)) return;
+    setState(() => saving = true);
+    try {
+      final payload = {
+        'name': name.text.trim(),
+        'description': desc.text.trim(),
+        'packageType': type,
+        'benefits': benefits.text
+            .split('\n')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList(),
+        'messageLimit': int.parse(messages.text),
+        'contactLimit': int.parse(contacts.text),
+        'automationLimit': int.parse(automations.text),
+        'pricePaise': (double.parse(price.text) * 100).round(),
+        'durationMonths': int.parse(duration.text),
+        'isActive': active,
+      };
+      if (widget.existing == null)
+        await ref
+            .read(apiClientProvider)
+            .post('/api/admin/packages', data: payload);
+      else
+        await ref
+            .read(apiClientProvider)
+            .put(
+              '/api/admin/packages/${widget.existing!['id']}',
+              data: payload,
+            );
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+      if (mounted) setState(() => saving = false);
+    }
+  }
 }

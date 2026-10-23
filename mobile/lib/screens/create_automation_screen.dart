@@ -1921,7 +1921,10 @@ class _CreateAutomationScreenState
         final failures = result is Map
             ? (result['results'] as List? ?? const [])
                   .whereType<Map>()
-                  .where((row) => row['status'] == 'FAILED')
+                  .where(
+                    (row) =>
+                        row['status'] == 'FAILED' || row['status'] == 'SKIPPED',
+                  )
                   .toList()
             : const <Map>[];
         final failureNote = failures.isNotEmpty
@@ -1930,7 +1933,7 @@ class _CreateAutomationScreenState
         showAppMessage(
           context,
           sendNow && result is Map
-              ? 'Awaiting delivery ${result['accepted'] ?? 0}, confirmed sent ${result['sent'] ?? 0}, failed ${result['failed'] ?? 0}. Open Scheduled Messages for delivery details.$failureNote'
+              ? 'Queued ${result['queued'] ?? 0}, accepted ${result['accepted'] ?? 0}, confirmed sent ${result['sent'] ?? 0}, failed ${result['failed'] ?? 0}, skipped ${result['skipped'] ?? 0}. Sending continues on the server. Open Scheduled Messages for results.$failureNote'
               : '$created scheduled message${created == 1 ? '' : 's'} created',
           error: failures.isNotEmpty,
         );

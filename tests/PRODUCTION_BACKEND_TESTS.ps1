@@ -15,22 +15,22 @@ foreach ($fn in $ast.FindAll({param($n) $n -is [System.Management.Automation.Lan
 }
 $server = Get-Content -Raw (Join-Path $ProjectRoot 'server.ts')
 $source = Get-Content -Raw $setupPath
-Assert ($server.Contains("build: 'meta-connect-production-20261013-v2'") -and $source.Contains("else { 'meta-connect-production-20261013-v2' }")) 'Health and deployment checks use the same release identifier'
+Assert ($server.Contains("build: 'bulk-import-production-20261022'") -and $source.Contains("else { 'bulk-import-production-20261022' }")) 'Health and deployment checks use the same release identifier'
 
 $script:polls = 0; $script:healthMode = 'old'
 function Invoke-RestMethod {
   param($Uri, $Method, $TimeoutSec)
   $script:polls++
   if ($script:healthMode -eq 'throw') { throw 'network unavailable' }
-  $build = if ($script:healthMode -eq 'new' -and $script:polls -gt 2) { 'meta-connect-production-20261013-v2' } else { 'previous-version' }
+  $build = if ($script:healthMode -eq 'new' -and $script:polls -gt 2) { 'bulk-import-production-20261022' } else { 'previous-version' }
   return [PSCustomObject]@{status = 'ok'; build = $build}
 }
 function Start-Sleep { param($Seconds) }
 $failed = $false
-try { Wait-ForHealth 'https://fixture.example.invalid' -ExpectedBuild 'meta-connect-production-20261013-v2' } catch { $failed = $true }
+try { Wait-ForHealth 'https://fixture.example.invalid' -ExpectedBuild 'bulk-import-production-20261022' } catch { $failed = $true }
 Assert ($failed -and $script:polls -eq 40) 'A healthy old backend cannot pass the new-deployment check'
 $script:polls = 0; $script:healthMode = 'new'
-Wait-ForHealth 'https://fixture.example.invalid' -ExpectedBuild 'meta-connect-production-20261013-v2'
+Wait-ForHealth 'https://fixture.example.invalid' -ExpectedBuild 'bulk-import-production-20261022'
 Assert ($script:polls -eq 3) 'Poll until the new build is actually serving'
 $script:polls = 0; $script:healthMode = 'old'
 Wait-ForHealth 'https://fixture.example.invalid'

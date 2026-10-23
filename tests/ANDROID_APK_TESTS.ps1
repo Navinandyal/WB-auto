@@ -1,4 +1,4 @@
-param([string]$ProjectPath=(Split-Path -Parent $PSScriptRoot))
+﻿param([string]$ProjectPath=(Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 $script:assertions=0
 function Assert([bool]$Condition,[string]$Message) {
@@ -37,7 +37,7 @@ foreach($line in @("Source Stamp Signer certificate SHA-256 digest: $digest","Si
 Assert (@(Get-GreetApkSignerDigests "$([char]27)[32mSigner #1 certificate SHA-256 digest: $digest$([char]27)[0m").Count -eq 1) 'ANSI console decoration tolerated'
 foreach ($file in @('BUILD_APK_ONLY.cmd','build-greetsync-release-apk.cmd','build-wishflow-release-apk.cmd')) {
   $launcher=Get-Content -Raw (Join-Path $ProjectPath $file)
-  Assert ($launcher -match 'SETUP_PRODUCTION_AND_BUILD.ps1' -and $launcher -match '-SkipRailwayDeploy') "$file uses verified APK-only workflow"
+  Assert (($file -eq 'BUILD_APK_ONLY.cmd' -and $launcher -match 'SETUP_PRODUCTION_AND_BUILD.ps1' -and $launcher -match '-SkipRenderDeploy') -or ($file -ne 'BUILD_APK_ONLY.cmd' -and $launcher -match 'BUILD_APK_ONLY.cmd')) "$file uses verified APK-only workflow"
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $tempRoot=Join-Path ([IO.Path]::GetTempPath()) ('GreetSync APK tests spaces '+[guid]::NewGuid())

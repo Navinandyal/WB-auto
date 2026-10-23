@@ -5,51 +5,509 @@ import '../core/api_client.dart';
 import '../providers/providers.dart';
 import '../theme/business_theme.dart';
 import '../widgets/common.dart';
+import '../widgets/admin_ui.dart';
 
 class AdminConfigurationScreen extends ConsumerStatefulWidget {
   const AdminConfigurationScreen({super.key});
-  @override ConsumerState<AdminConfigurationScreen> createState()=>_AdminConfigurationScreenState();
+  @override
+  ConsumerState<AdminConfigurationScreen> createState() =>
+      _AdminConfigurationScreenState();
 }
-class _AdminConfigurationScreenState extends ConsumerState<AdminConfigurationScreen>{
-  final _form=GlobalKey<FormState>();
-  final appId=TextEditingController(),appSecret=TextEditingController(),configId=TextEditingController(),apiVersion=TextEditingController(text:'v26.0'),publicBaseUrl=TextEditingController(),webhookToken=TextEditingController();
-  bool loading=true,saving=false,testing=false,hideSecret=true,configured=false;String secretMasked='',detectedPublicBaseUrl='',detectedPublicBaseUrlSource='',embeddedSignupOrigin='',embeddedSignupHostname='',webhookCallbackUrl='',source='';String? error;
-  @override void initState(){super.initState();_load();}
-  Future<void> _load()async{setState(()=>loading=true);try{final data=(await ref.read(apiClientProvider).get('/api/admin/meta-platform-settings') as Map).cast<String,dynamic>();if(!mounted)return;setState((){appId.text='${data['metaAppId']??''}';configId.text='${data['embeddedSignupConfigId']??''}';apiVersion.text='${data['apiVersion']??'v26.0'}';publicBaseUrl.text='${data['publicBaseUrl']??''}';secretMasked='${data['appSecretMasked']??''}';appSecret.text=secretMasked;detectedPublicBaseUrl='${data['detectedPublicBaseUrl']??''}';detectedPublicBaseUrlSource='${data['detectedPublicBaseUrlSource']??''}';embeddedSignupOrigin='${data['embeddedSignupOrigin']??''}';embeddedSignupHostname='${data['embeddedSignupHostname']??''}';webhookCallbackUrl='${data['webhookCallbackUrl']??''}';webhookToken.text='${data['webhookVerifyToken']??''}';configured=data['configured']==true;source='${data['source']??''}';error=null;loading=false;});}catch(e){if(mounted)setState((){loading=false;error=e is ApiException?e.message:'$e';});}}
-  String? _required(String? v,String label)=>((v??'').trim().isEmpty)?'$label is required':null;
-  Future<void> _save()async{if(!(_form.currentState?.validate()??false))return;if(publicBaseUrl.text.trim().isNotEmpty&&!publicBaseUrl.text.trim().startsWith('https://')){showAppMessage(context,'HTTPS Origin Override must begin with https://',error:true);return;}setState(()=>saving=true);try{final data=(await ref.read(apiClientProvider).put('/api/admin/meta-platform-settings',data:{'metaAppId':appId.text.trim(),'appSecret':appSecret.text.trim(),'embeddedSignupConfigId':configId.text.trim(),'apiVersion':apiVersion.text.trim(),'publicBaseUrl':publicBaseUrl.text.trim(),'webhookVerifyToken':webhookToken.text.trim()}) as Map).cast<String,dynamic>();if(!mounted)return;setState((){configured=data['configured']==true;source='${data['source']??'database'}';secretMasked='${data['appSecretMasked']??''}';appSecret.text=secretMasked;detectedPublicBaseUrl='${data['detectedPublicBaseUrl']??''}';detectedPublicBaseUrlSource='${data['detectedPublicBaseUrlSource']??''}';embeddedSignupOrigin='${data['embeddedSignupOrigin']??''}';embeddedSignupHostname='${data['embeddedSignupHostname']??''}';webhookCallbackUrl='${data['webhookCallbackUrl']??''}';webhookToken.text='${data['webhookVerifyToken']??webhookToken.text}';});showAppMessage(context,'Provider configuration saved securely.');}catch(e){if(mounted)showAppMessage(context,e is ApiException?e.message:'$e',error:true);}finally{if(mounted)setState(()=>saving=false);}}
-  Future<void> _test()async{setState(()=>testing=true);try{final d=await ref.read(apiClientProvider).post('/api/admin/meta-platform-settings/test',data:{});if(mounted)showAppMessage(context,d is Map?'${d['message']??'Meta setup is ready.'}':'Meta setup is ready.');}catch(e){if(mounted)showAppMessage(context,e is ApiException?e.message:'$e',error:true);}finally{if(mounted)setState(()=>testing=false);}}
-  Future<void> _regen()async{try{final d=(await ref.read(apiClientProvider).post('/api/admin/meta-platform-settings/regenerate-webhook-token',data:{}) as Map).cast<String,dynamic>();if(!mounted)return;setState((){webhookToken.text='${d['webhookVerifyToken']??''}';webhookCallbackUrl='${d['webhookCallbackUrl']??webhookCallbackUrl}';});showAppMessage(context,'Webhook verify token regenerated.');}catch(e){if(mounted)showAppMessage(context,'$e',error:true);}}
-  Future<void> _openMeta()async{final ok=await launchUrl(Uri.parse('https://business.facebook.com/business/loginpage/?next=https%3A%2F%2Fdevelopers.facebook.com%2F'),mode:LaunchMode.externalApplication);if(!ok&&mounted)showAppMessage(context,'Could not open Meta for Developers.',error:true);}
-  @override void dispose(){for(final c in[appId,appSecret,configId,apiVersion,publicBaseUrl,webhookToken])c.dispose();super.dispose();}
-  @override Widget build(BuildContext context){if(loading)return const Center(child:CircularProgressIndicator());final primary=Theme.of(context).colorScheme.primary;return RefreshIndicator(onRefresh:_load,child:Form(key:_form,child:ListView(padding:const EdgeInsets.fromLTRB(16,12,16,30),children:[
-    Row(crossAxisAlignment:CrossAxisAlignment.start,children:[Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('Platform Configuration',style:TextStyle(fontSize:28,fontWeight:FontWeight.w900,color:BusinessColors.ink)),const SizedBox(height:4),const Text('Provider setup used to onboard every business safely.',style:TextStyle(color:BusinessColors.muted)),const SizedBox(height:10),Wrap(spacing:8,runSpacing:8,children:[_statusChip(configured?'Configured':'Needs setup',configured?BusinessColors.green:Colors.orange),if(source.isNotEmpty)_statusChip(source,primary)])])),IconButton.filledTonal(onPressed:_load,icon:const Icon(Icons.refresh_rounded))]),
-    if(error!=null)...[const SizedBox(height:12),Container(padding:const EdgeInsets.all(13),decoration:BoxDecoration(color:const Color(0xFFFFF0F0),borderRadius:BorderRadius.circular(14)),child:Text(error!,style:const TextStyle(color:Colors.redAccent)))],
-    const SizedBox(height:16),
-    _sectionCard(context,icon:Icons.hub_outlined,title:'Meta Provider App',subtitle:'Configured once by the GreetSync administrator.',children:[
-      OutlinedButton.icon(onPressed:_openMeta,icon:const Icon(Icons.open_in_new_rounded),label:const Text('Open Meta for Developers')),
-      const SizedBox(height:12),TextFormField(controller:appId,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'Meta App ID',prefixIcon:Icon(Icons.apps_outlined)),validator:(v)=>_required(v,'Meta App ID')),
-      const SizedBox(height:12),TextFormField(controller:appSecret,obscureText:hideSecret,decoration:InputDecoration(labelText:'Meta App Secret',prefixIcon:const Icon(Icons.lock_outline),helperText:secretMasked.isEmpty?'Encrypted on the GreetSync backend.':'Saved secret is masked. Leave the masked value unchanged to keep it.',suffixIcon:IconButton(onPressed:()=>setState(()=>hideSecret=!hideSecret),icon:Icon(hideSecret?Icons.visibility_outlined:Icons.visibility_off_outlined))),validator:(v)=>_required(v,'Meta App Secret')),
-      const SizedBox(height:12),TextFormField(controller:configId,decoration:const InputDecoration(labelText:'Embedded Signup Configuration ID',prefixIcon:Icon(Icons.verified_user_outlined)),validator:(v)=>_required(v,'Embedded Signup Configuration ID')),
-      const SizedBox(height:12),TextFormField(controller:apiVersion,decoration:const InputDecoration(labelText:'Graph API Version',hintText:'v26.0',prefixIcon:Icon(Icons.api_outlined)),validator:(v)=>RegExp(r'^v\d+\.\d+$').hasMatch((v??'').trim())?null:'Use a version such as v26.0'),
-    ]),
-    const SizedBox(height:14),
-    _sectionCard(context,icon:Icons.language_rounded,title:'Development / Callback',subtitle:'GreetSync can auto-detect a local ngrok HTTPS tunnel.',children:[
-      TextFormField(controller:publicBaseUrl,keyboardType:TextInputType.url,decoration:const InputDecoration(labelText:'HTTPS Origin Override (optional)',hintText:'https://your-domain.ngrok-free.app',prefixIcon:Icon(Icons.link_rounded))),
-      if(detectedPublicBaseUrl.isNotEmpty)...[const SizedBox(height:10),_info('Detected HTTPS origin','$detectedPublicBaseUrl${detectedPublicBaseUrlSource.isEmpty?'':' • $detectedPublicBaseUrlSource'}',primary)],
-      if(embeddedSignupOrigin.isNotEmpty)...[const SizedBox(height:10),_info('Embedded Signup origin','$embeddedSignupOrigin${embeddedSignupHostname.isEmpty?'':'\n$embeddedSignupHostname'}',primary)],
-    ]),
-    const SizedBox(height:14),
-    _sectionCard(context,icon:Icons.webhook_rounded,title:'Webhook',subtitle:'Use these exact values in Meta Production Setup.',children:[
-      TextFormField(controller:webhookToken,readOnly:true,decoration:const InputDecoration(labelText:'Webhook Verify Token',prefixIcon:Icon(Icons.key_rounded))),
-      const SizedBox(height:9),SizedBox(width:double.infinity,child:OutlinedButton.icon(onPressed:_regen,icon:const Icon(Icons.refresh_rounded),label:const Text('Regenerate Verify Token'))),
-      if(webhookCallbackUrl.isNotEmpty)...[const SizedBox(height:10),_info('Callback URL',webhookCallbackUrl,BusinessColors.green)],
-    ]),
-    const SizedBox(height:16),
-    FilledButton.icon(onPressed:saving?null:_save,icon:saving?const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2,color:Colors.white)):const Icon(Icons.save_outlined),label:Text(saving?'Saving…':'Save Configuration')),
-    const SizedBox(height:10),OutlinedButton.icon(onPressed:(!configured||testing)?null:_test,icon:testing?const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.verified_outlined),label:Text(testing?'Validating…':'Validate Meta Setup')),
-  ])));}
-  Widget _sectionCard(BuildContext context,{required IconData icon,required String title,required String subtitle,required List<Widget> children})=>Card(child:Padding(padding:const EdgeInsets.all(17),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Row(crossAxisAlignment:CrossAxisAlignment.start,children:[SoftIcon(icon,color:Theme.of(context).colorScheme.primary),const SizedBox(width:10),Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(title,style:const TextStyle(fontSize:18,fontWeight:FontWeight.w900)),const SizedBox(height:2),Text(subtitle,style:const TextStyle(color:BusinessColors.muted,fontSize:12))]))]),const SizedBox(height:16),...children])));
-  Widget _info(String title,String value,Color color)=>Container(width:double.infinity,padding:const EdgeInsets.all(12),decoration:BoxDecoration(color:color.withOpacity(.07),borderRadius:BorderRadius.circular(13)),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(title,style:TextStyle(fontWeight:FontWeight.w900,color:color)),const SizedBox(height:4),SelectableText(value,style:const TextStyle(fontSize:12,color:BusinessColors.ink))]));
-  Widget _statusChip(String text,Color color)=>Container(padding:const EdgeInsets.symmetric(horizontal:9,vertical:5),decoration:BoxDecoration(color:color.withOpacity(.10),borderRadius:BorderRadius.circular(20)),child:Text(text,style:TextStyle(color:color,fontSize:10,fontWeight:FontWeight.w900)));
+
+class _AdminConfigurationScreenState
+    extends ConsumerState<AdminConfigurationScreen> {
+  final _form = GlobalKey<FormState>();
+  final appId = TextEditingController(),
+      appSecret = TextEditingController(),
+      configId = TextEditingController(),
+      apiVersion = TextEditingController(text: 'v26.0'),
+      publicBaseUrl = TextEditingController(),
+      webhookToken = TextEditingController();
+  bool loading = true,
+      saving = false,
+      testing = false,
+      hideSecret = true,
+      configured = false;
+  String secretMasked = '',
+      detectedPublicBaseUrl = '',
+      detectedPublicBaseUrlSource = '',
+      embeddedSignupOrigin = '',
+      embeddedSignupHostname = '',
+      webhookCallbackUrl = '',
+      source = '';
+  String? error;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => loading = true);
+    try {
+      final data =
+          (await ref
+                      .read(apiClientProvider)
+                      .get('/api/admin/meta-platform-settings')
+                  as Map)
+              .cast<String, dynamic>();
+      if (!mounted) return;
+      setState(() {
+        appId.text = '${data['metaAppId'] ?? ''}';
+        configId.text = '${data['embeddedSignupConfigId'] ?? ''}';
+        apiVersion.text = '${data['apiVersion'] ?? 'v26.0'}';
+        publicBaseUrl.text = '${data['publicBaseUrl'] ?? ''}';
+        secretMasked = '${data['appSecretMasked'] ?? ''}';
+        appSecret.text = secretMasked;
+        detectedPublicBaseUrl = '${data['detectedPublicBaseUrl'] ?? ''}';
+        detectedPublicBaseUrlSource =
+            '${data['detectedPublicBaseUrlSource'] ?? ''}';
+        embeddedSignupOrigin = '${data['embeddedSignupOrigin'] ?? ''}';
+        embeddedSignupHostname = '${data['embeddedSignupHostname'] ?? ''}';
+        webhookCallbackUrl = '${data['webhookCallbackUrl'] ?? ''}';
+        webhookToken.text = '${data['webhookVerifyToken'] ?? ''}';
+        configured = data['configured'] == true;
+        source = '${data['source'] ?? ''}';
+        error = null;
+        loading = false;
+      });
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          loading = false;
+          error = e is ApiException ? e.message : '$e';
+        });
+    }
+  }
+
+  String? _required(String? v, String label) =>
+      ((v ?? '').trim().isEmpty) ? '$label is required' : null;
+  Future<void> _save() async {
+    if (!(_form.currentState?.validate() ?? false)) return;
+    if (publicBaseUrl.text.trim().isNotEmpty &&
+        !publicBaseUrl.text.trim().startsWith('https://')) {
+      showAppMessage(
+        context,
+        'HTTPS Origin Override must begin with https://',
+        error: true,
+      );
+      return;
+    }
+    setState(() => saving = true);
+    try {
+      final data =
+          (await ref
+                      .read(apiClientProvider)
+                      .put(
+                        '/api/admin/meta-platform-settings',
+                        data: {
+                          'metaAppId': appId.text.trim(),
+                          'appSecret': appSecret.text.trim(),
+                          'embeddedSignupConfigId': configId.text.trim(),
+                          'apiVersion': apiVersion.text.trim(),
+                          'publicBaseUrl': publicBaseUrl.text.trim(),
+                          'webhookVerifyToken': webhookToken.text.trim(),
+                        },
+                      )
+                  as Map)
+              .cast<String, dynamic>();
+      if (!mounted) return;
+      setState(() {
+        configured = data['configured'] == true;
+        source = '${data['source'] ?? 'database'}';
+        secretMasked = '${data['appSecretMasked'] ?? ''}';
+        appSecret.text = secretMasked;
+        detectedPublicBaseUrl = '${data['detectedPublicBaseUrl'] ?? ''}';
+        detectedPublicBaseUrlSource =
+            '${data['detectedPublicBaseUrlSource'] ?? ''}';
+        embeddedSignupOrigin = '${data['embeddedSignupOrigin'] ?? ''}';
+        embeddedSignupHostname = '${data['embeddedSignupHostname'] ?? ''}';
+        webhookCallbackUrl = '${data['webhookCallbackUrl'] ?? ''}';
+        webhookToken.text =
+            '${data['webhookVerifyToken'] ?? webhookToken.text}';
+      });
+      showAppMessage(context, 'Provider configuration saved securely.');
+    } catch (e) {
+      if (mounted)
+        showAppMessage(
+          context,
+          e is ApiException ? e.message : '$e',
+          error: true,
+        );
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> _test() async {
+    setState(() => testing = true);
+    try {
+      final d = await ref
+          .read(apiClientProvider)
+          .post('/api/admin/meta-platform-settings/test', data: {});
+      if (mounted)
+        showAppMessage(
+          context,
+          d is Map
+              ? '${d['message'] ?? 'Meta setup is ready.'}'
+              : 'Meta setup is ready.',
+        );
+    } catch (e) {
+      if (mounted)
+        showAppMessage(
+          context,
+          e is ApiException ? e.message : '$e',
+          error: true,
+        );
+    } finally {
+      if (mounted) setState(() => testing = false);
+    }
+  }
+
+  Future<void> _regen() async {
+    try {
+      final d =
+          (await ref
+                      .read(apiClientProvider)
+                      .post(
+                        '/api/admin/meta-platform-settings/regenerate-webhook-token',
+                        data: {},
+                      )
+                  as Map)
+              .cast<String, dynamic>();
+      if (!mounted) return;
+      setState(() {
+        webhookToken.text = '${d['webhookVerifyToken'] ?? ''}';
+        webhookCallbackUrl = '${d['webhookCallbackUrl'] ?? webhookCallbackUrl}';
+      });
+      showAppMessage(context, 'Webhook verify token regenerated.');
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _openMeta() async {
+    final ok = await launchUrl(
+      Uri.parse(
+        'https://business.facebook.com/business/loginpage/?next=https%3A%2F%2Fdevelopers.facebook.com%2F',
+      ),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && mounted)
+      showAppMessage(
+        context,
+        'Could not open Meta for Developers.',
+        error: true,
+      );
+  }
+
+  @override
+  void dispose() {
+    for (final c in [
+      appId,
+      appSecret,
+      configId,
+      apiVersion,
+      publicBaseUrl,
+      webhookToken,
+    ])
+      c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return const Center(child: CircularProgressIndicator());
+    final primary = Theme.of(context).colorScheme.primary;
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: Form(
+        key: _form,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
+          children: [
+            AdminHeader(
+              'Platform configuration',
+              'Manage the Meta app, business onboarding and callback settings.',
+              icon: Icons.tune,
+              action: OutlinedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reload settings'),
+              ),
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _statusChip(
+                  configured ? 'Configured' : 'Needs setup',
+                  configured ? BusinessColors.green : Colors.orange,
+                ),
+                if (source.isNotEmpty) _statusChip(source, primary),
+              ],
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF0F0),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  error!,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            _sectionCard(
+              context,
+              icon: Icons.hub_outlined,
+              title: 'Meta Provider App',
+              subtitle: 'Configured once by the GreetSync administrator.',
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _openMeta,
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: const Text('Open Meta for Developers'),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: appId,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Meta App ID',
+                    prefixIcon: Icon(Icons.apps_outlined),
+                  ),
+                  validator: (v) => _required(v, 'Meta App ID'),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: appSecret,
+                  obscureText: hideSecret,
+                  decoration: InputDecoration(
+                    labelText: 'Meta App Secret',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    helperText: secretMasked.isEmpty
+                        ? 'Encrypted on the GreetSync backend.'
+                        : 'Saved secret is masked. Leave the masked value unchanged to keep it.',
+                    suffixIcon: IconButton(
+                      onPressed: () => setState(() => hideSecret = !hideSecret),
+                      icon: Icon(
+                        hideSecret
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
+                    ),
+                  ),
+                  validator: (v) => _required(v, 'Meta App Secret'),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: configId,
+                  decoration: const InputDecoration(
+                    labelText: 'Embedded Signup Configuration ID',
+                    prefixIcon: Icon(Icons.verified_user_outlined),
+                  ),
+                  validator: (v) =>
+                      _required(v, 'Embedded Signup Configuration ID'),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: apiVersion,
+                  decoration: const InputDecoration(
+                    labelText: 'Graph API Version',
+                    hintText: 'v26.0',
+                    prefixIcon: Icon(Icons.api_outlined),
+                  ),
+                  validator: (v) =>
+                      RegExp(r'^v\d+\.\d+$').hasMatch((v ?? '').trim())
+                      ? null
+                      : 'Use a version such as v26.0',
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _sectionCard(
+              context,
+              icon: Icons.language_rounded,
+              title: 'Development / Callback',
+              subtitle: 'GreetSync can auto-detect a local ngrok HTTPS tunnel.',
+              children: [
+                TextFormField(
+                  controller: publicBaseUrl,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'HTTPS Origin Override (optional)',
+                    hintText: 'https://your-domain.ngrok-free.app',
+                    prefixIcon: Icon(Icons.link_rounded),
+                  ),
+                ),
+                if (detectedPublicBaseUrl.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _info(
+                    'Detected HTTPS origin',
+                    '$detectedPublicBaseUrl${detectedPublicBaseUrlSource.isEmpty ? '' : ' • $detectedPublicBaseUrlSource'}',
+                    primary,
+                  ),
+                ],
+                if (embeddedSignupOrigin.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _info(
+                    'Embedded Signup origin',
+                    '$embeddedSignupOrigin${embeddedSignupHostname.isEmpty ? '' : '\n$embeddedSignupHostname'}',
+                    primary,
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 14),
+            _sectionCard(
+              context,
+              icon: Icons.webhook_rounded,
+              title: 'Webhook',
+              subtitle: 'Use these exact values in Meta Production Setup.',
+              children: [
+                TextFormField(
+                  controller: webhookToken,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Webhook Verify Token',
+                    prefixIcon: Icon(Icons.key_rounded),
+                  ),
+                ),
+                const SizedBox(height: 9),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _regen,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Regenerate Verify Token'),
+                  ),
+                ),
+                if (webhookCallbackUrl.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _info(
+                    'Callback URL',
+                    webhookCallbackUrl,
+                    BusinessColors.green,
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: saving ? null : _save,
+              icon: saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.save_outlined),
+              label: Text(saving ? 'Saving…' : 'Save Configuration'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: (!configured || testing) ? null : _test,
+              icon: testing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.verified_outlined),
+              label: Text(testing ? 'Validating…' : 'Validate Meta Setup'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionCard(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required List<Widget> children,
+  }) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(17),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SoftIcon(icon, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: BusinessColors.muted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...children,
+        ],
+      ),
+    ),
+  );
+  Widget _info(String title, String value, Color color) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: color.withOpacity(.07),
+      borderRadius: BorderRadius.circular(13),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(fontWeight: FontWeight.w900, color: color),
+        ),
+        const SizedBox(height: 4),
+        SelectableText(
+          value,
+          style: const TextStyle(fontSize: 12, color: BusinessColors.ink),
+        ),
+      ],
+    ),
+  );
+  Widget _statusChip(String text, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+    decoration: BoxDecoration(
+      color: color.withOpacity(.10),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Text(
+      text,
+      style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w900),
+    ),
+  );
 }

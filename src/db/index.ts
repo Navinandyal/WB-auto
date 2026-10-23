@@ -1,6 +1,12 @@
+import { protectSupabaseTables } from '../server/supabase-access.ts';
 // Database pool and Drizzle client initialization
 import * as dotenv from 'dotenv';
+import { readFileSync, existsSync } from 'node:fs';
+import { assertDatabaseTarget, applyLocalDatabaseEnvironment } from '../server/database-target.ts';
 dotenv.config();
+if (process.env.NODE_ENV !== 'production' && existsSync('.env')) {
+  applyLocalDatabaseEnvironment(process.env, dotenv.parse(readFileSync('.env')));
+}
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
@@ -17,11 +23,16 @@ declare global {
 }
 
 export const createPool = () => {
+  const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  assertDatabaseTarget(connectionString, process.env);
+  if (global._postgresPool && process.env.DATABASE_TARGET_HOST &&
+      global._postgresPool.options.connectionString !== connectionString) {
+    throw new Error('Database configuration changed. Restart the backend to use the selected connection.');
+  }
   if (!global._postgresPool) {
-    const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
     if (process.env.NODE_ENV === 'production' && !connectionString) {
-      throw new Error('DATABASE_URL is required in production. Configure the Railway PostgreSQL URL/reference on the backend service.');
+      throw new Error('DATABASE_URL is required in production. Configure the Supabase Session pooler DATABASE_URL on the backend service.');
     }
 
     if (connectionString) {
@@ -420,6 +431,13 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           created_at TIMESTAMP DEFAULT NOW()
         );
       `);
+      if (process.env.DATABASE_PROVIDER === 'supabase') {
+        await client.query(`CREATE TABLE IF NOT EXISTS greetsync_deployment_migrations (
+          id TEXT PRIMARY KEY, backup_sha256 TEXT NOT NULL, target_fingerprint TEXT NOT NULL,
+          row_counts JSONB NOT NULL DEFAULT '{}'::jsonb, completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await protectSupabaseTables(client);
+      }
       isDatabaseConnected = true;
       console.log('[Database] PostgreSQL connection verified and tables initialized.');
       return true;
@@ -434,7 +452,7 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
         '\n[Database Note] Local PostgreSQL requires authentication (SCRAM-SHA-256).\n' +
         '  To connect your local PostgreSQL database, set SQL_PASSWORD in your .env file:\n' +
         '  SQL_PASSWORD="your_postgres_password"\n' +
-        '  (Running in resilient fallback mode in the meantime; all features will work locally)\n'
+        '  Production startup and scheduled sending remain stopped until the database is reachable.\n'
       );
     } else {
       console.warn('[Database Note] PostgreSQL is offline or unreachable:', msg);

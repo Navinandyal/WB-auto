@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -118,7 +118,7 @@ class _MetaEmbeddedSignupScreenState
     });
     try {
       bool opened = false;
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      if (Platform.isAndroid) {
         try {
           await _browserChannel.invokeMethod<bool>('openChrome', {'url': raw});
           opened = true;

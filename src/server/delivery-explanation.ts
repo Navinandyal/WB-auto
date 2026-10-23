@@ -1,3 +1,4 @@
+import { marketingRetryAfter, marketingLimitMessage, metaErrorText } from './marketing-limits.ts';
 /** Reports evidence, never invents delivery or a Meta rejection for a missing receipt. */
 export function explainDelivery(activity:any,records:any[],evidence?:any,connection?:any){
   const latest=[...records].sort((a,b)=>Number(b.id)-Number(a.id))[0];
@@ -6,9 +7,19 @@ export function explainDelivery(activity:any,records:any[],evidence?:any,connect
   const status=String(activity.status||'');
   const result=(code:string,title:string,message:string,action:string,extra:any={})=>({code,title,message,action,messageId,lastReceiptAt:evidence?.receivedAt||null,...extra});
   if(['DELIVERED','READ'].includes(status))return result('DELIVERY_CONFIRMED',status==='READ'?'Read confirmed':'Delivery confirmed','WhatsApp returned a real delivery or read receipt.','No new send attempt is needed.');
-  if(status==='FAILED')return result('SEND_FAILED','Message failed',String(latest?.errorMessage||latest?.error_message||activity.errorMessage||'WhatsApp sending failed.'),'Fix the reported error before reviewing another attempt.',{metaErrorCode:latest?.errorCode||latest?.error_code||null});
+  if(status==='FAILED'){
+    const code=String(latest?.errorCode||latest?.error_code||(/131049/.test(activity.errorMessage||'')?'131049':''));
+    if(code==='131049'){
+      const after=marketingRetryAfter(latest)||new Date(variables.__marketing_retry_after||0);
+      const retryAfter=Number.isFinite(after.getTime())&&after>new Date()?after.toISOString():null;
+      return result('MARKETING_RECIPIENT_LIMIT','WhatsApp marketing limit',marketingLimitMessage,
+        retryAfter?'Wait until the retry time before reviewing a new attempt. A new attempt is not guaranteed to deliver.':'Review this recipient’s engagement and consent before another attempt.',
+        {metaErrorCode:code,retryAfter,canRetry:!retryAfter});
+    }
+    return result('SEND_FAILED','Message failed',String(latest?.errorMessage||latest?.error_message||activity.errorMessage||'WhatsApp sending failed.'),'Fix the reported error before reviewing another attempt.',{metaErrorCode:code||null});
+  }
   const metaFailure=String(evidence?.status||'').toUpperCase()==='FAILED'?(evidence.errors?.[0]||{}):null;
-  if(metaFailure)return result('META_FAILURE_RECEIVED','Meta returned a delivery failure',[metaFailure.title,metaFailure.message,metaFailure.error_data?.details].filter(Boolean).join(': ').slice(0,1400)||'WhatsApp returned a failed status without additional error details.','Refresh activity after the received callback is processed. Fix this Meta error before sending again.',{metaErrorCode:String(metaFailure.code||'DELIVERY_FAILED'),receiptReference:evidence?.id?`webhook_${evidence.id}`:null});
+  if(metaFailure)return result('META_FAILURE_RECEIVED','Meta returned a delivery failure',metaErrorText(metaFailure, 'WhatsApp returned a failed status without additional error details.'),'Refresh activity after the received callback is processed. Fix this Meta error before sending again.',{metaErrorCode:String(metaFailure.code||'DELIVERY_FAILED'),receiptReference:evidence?.id?`webhook_${evidence.id}`:null});
   if(variables.__meta_message_status==='held_for_quality_assessment')return result('META_QUALITY_HOLD','Meta is holding this message','Meta accepted the message but placed it on hold for quality assessment. Delivery has not been confirmed.','Check this template in WhatsApp Manager before another attempt.');
   if(variables.__meta_message_status==='paused')return result('META_PAUSED','Meta paused this message','The send response reports paused delivery.','Check the account and template status in WhatsApp Manager.');
   if(evidence){
@@ -21,6 +32,7 @@ export function explainDelivery(activity:any,records:any[],evidence?:any,connect
   if(status==='SENT')return result('DEVICE_RECEIPT_PENDING','WhatsApp sent the message','A send status was confirmed, but the recipient device has not returned a delivery receipt.','Wait for a delivered/read status. The missing receipt alone does not explain why the recipient has not received it.');
   if(status==='ACCEPTED'&&messageId)return result('NO_DELIVERY_RECEIPT','No delivery receipt was received for this message','Meta returned a message ID, but GreetSync has no delivered/read/failed receipt for this attempt. No specific Meta delivery error is available yet.','Run Test connection and verify the Meta app messages webhook field and callback URL. A missing receipt cannot prove delivery or failure.');
   if(connection?.connectionStatus&&connection.connectionStatus!=='CONNECTED'&&status==='ACCEPTED')return result('CONNECTION_NOT_VERIFIED','Delivery connection has not been verified','The saved WhatsApp connection has not completed verification.','Open WhatsApp connection settings and run Test connection.');
+  if(status==='SCHEDULED')return result('MESSAGE_QUEUED','Message queued','This message is saved in the sending queue.','Sending continues on the server. Open Scheduled Messages to follow its status.');
   if(status==='PROCESSING')return result('SEND_IN_PROGRESS','Send request is being processed','The attempt is still executing. There is no confirmed send or delivery receipt yet.','Refresh the activity. Do not create another attempt while this one is processing.');
   return result('NO_DELIVERY_ERROR','No Meta delivery error is recorded','This activity has no confirmed delivery failure to report.','Use the current activity state and received callbacks to decide the next step.');
 }

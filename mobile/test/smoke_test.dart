@@ -11,7 +11,12 @@ void main() {
       File('../GREETSYNC_DEPLOYMENT.json').readAsStringSync(),
     );
     expect(defaultApiBaseUrl, saved['backendUrl']);
-    expect(Uri.parse(defaultApiBaseUrl).scheme, 'https');
+    expect(
+      defaultApiBaseUrl.isEmpty ||
+          Uri.parse(defaultApiBaseUrl).scheme == 'https',
+      isTrue,
+    );
+    expect(defaultApiBaseUrl.contains('railway.app'), isFalse);
     expect(Uri.parse(AppConfig.apiBaseUrl).host, isNot('127.0.0.1'));
   });
 

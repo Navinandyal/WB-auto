@@ -1,256 +1,620 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
-import '../core/api_client.dart';
 import '../models/models.dart';
 import '../providers/providers.dart';
+import '../widgets/admin_ui.dart';
+import '../widgets/common.dart';
+import 'admin_platform_lists.dart';
 
 class AdminBusinessesScreen extends ConsumerStatefulWidget {
   const AdminBusinessesScreen({super.key});
   @override
-  ConsumerState<AdminBusinessesScreen> createState() => _AdminBusinessesScreenState();
+  ConsumerState<AdminBusinessesScreen> createState() =>
+      _AdminBusinessesScreenState();
 }
 
 class _AdminBusinessesScreenState extends ConsumerState<AdminBusinessesScreen> {
-  String filter = 'ALL';
-  String search = '';
-
-  Future<void> _setStatus(BusinessUser u, String action) async {
-    try {
-      await ref.read(apiClientProvider).post('/api/admin/businesses/${u.id}/$action', data: {});
-      ref.invalidate(businessUsersProvider);
-      ref.invalidate(adminOverviewProvider);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${u.businessName.isEmpty ? u.name : u.businessName} updated')));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e is ApiException ? e.message : '$e')));
-    }
-  }
-
+  String search = '', filter = 'ALL';
+  int page = 0;
   @override
-  Widget build(BuildContext context) {
-    final state = ref.watch(businessUsersProvider);
-    return RefreshIndicator(
-      onRefresh: () async => ref.refresh(businessUsersProvider.future),
-      child: state.when(
-        loading: () => ListView(children: const [SizedBox(height: 260), Center(child: CircularProgressIndicator())]),
-        error: (e, _) => ListView(padding: const EdgeInsets.all(20), children: [const SizedBox(height: 160), Text('$e', textAlign: TextAlign.center)]),
-        data: (all) {
-          final items = all.where((u) {
+  Widget build(BuildContext context) => RefreshIndicator(
+    onRefresh: () async => ref.refresh(businessUsersProvider.future),
+    child: ref
+        .watch(businessUsersProvider)
+        .when(
+          loading: () => ListView(
+            children: const [
+              SizedBox(height: 140),
+              Center(child: CircularProgressIndicator()),
+            ],
+          ),
+          error: (e, _) => ListView(
+            children: [
+              ErrorState(
+                e,
+                onRetry: () => ref.invalidate(businessUsersProvider),
+              ),
+            ],
+          ),
+          data: (all) {
             final q = search.trim().toLowerCase();
-            final matchQ = q.isEmpty || u.businessName.toLowerCase().contains(q) || u.name.toLowerCase().contains(q) || u.mobile.contains(q) || u.email.toLowerCase().contains(q);
-            final st = u.isPending ? 'PENDING_APPROVAL' : u.approvalStatus;
-            return matchQ && (filter == 'ALL' || st == filter);
-          }).toList();
-          return ListView(padding: const EdgeInsets.fromLTRB(16, 18, 16, 30), children: [
-            const Text('Businesses', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: Color(0xFF071A63))),
-            const SizedBox(height: 4),
-            const Text('View owners, approval state, WhatsApp connection and business activity.', style: TextStyle(color: Color(0xFF62729B))),
-            const SizedBox(height: 16),
-            TextField(decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: 'Search business, owner, phone or email', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14))), onChanged: (v) => setState(() => search = v)),
-            const SizedBox(height: 10),
-            SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ['ALL','PENDING_APPROVAL','ACTIVE','REJECTED','SUSPENDED'].map((s) => Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(s == 'ALL' ? 'All' : s.replaceAll('_', ' ')), selected: filter == s, onSelected: (_) => setState(() => filter = s)))).toList())),
-            const SizedBox(height: 14),
-            if (items.isEmpty) const Card(child: Padding(padding: EdgeInsets.all(28), child: Center(child: Text('No businesses found.'))))
-            else ...items.map((u) => _businessCard(u)),
-          ]);
-        },
-      ),
-    );
-  }
-
-  Widget _businessCard(BusinessUser u) {
-    final status = u.isPending ? 'PENDING_APPROVAL' : u.approvalStatus;
-    final color = status == 'ACTIVE' || status == 'APPROVED' ? const Color(0xFF0F9D67) : status == 'REJECTED' || status == 'SUSPENDED' ? const Color(0xFFE5484D) : const Color(0xFFF59E0B);
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AdminBusinessDetailScreen(user: u))),
-        child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            CircleAvatar(radius: 25, backgroundColor: const Color(0xFFE6F0FF), child: Text((u.businessName.isNotEmpty ? u.businessName : u.name).substring(0,1).toUpperCase(), style: const TextStyle(color: Color(0xFF0867FF), fontWeight: FontWeight.w900))),
-            const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(u.businessName.isEmpty ? u.name : u.businessName, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Color(0xFF071A63))),
-              Text('Owner: ${u.name}', style: const TextStyle(color: Color(0xFF62729B))),
-              Text(u.mobile, style: const TextStyle(color: Color(0xFF7B88A6), fontSize: 12)),
-            ])),
-            Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: color.withOpacity(.12), borderRadius: BorderRadius.circular(20)), child: Text(status.replaceAll('_', ' '), style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w900))),
-          ]),
-          if (u.createdAt != null) ...[const SizedBox(height: 10), Text('Registered ${DateFormat('dd MMM yyyy').format(u.createdAt!)}', style: const TextStyle(color: Color(0xFF7B88A6), fontSize: 12))],
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: OutlinedButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AdminBusinessDetailScreen(user: u))), child: const Text('View Details'))),
-            const SizedBox(width: 8),
-            if (u.isPending) Expanded(child: FilledButton(onPressed: () => _setStatus(u, 'approve'), child: const Text('Approve')))
-            else if (status == 'ACTIVE' || status == 'APPROVED') Expanded(child: OutlinedButton(onPressed: () => _setStatus(u, 'suspend'), child: const Text('Suspend')))
-            else if (status == 'SUSPENDED') Expanded(child: FilledButton(onPressed: () => _setStatus(u, 'reactivate'), child: const Text('Reactivate'))),
-          ]),
-        ])),
-      ),
-    );
-  }
+            final items = all
+                .where(
+                  (u) =>
+                      (filter == 'ALL' ||
+                          (u.isPending
+                                  ? 'PENDING_APPROVAL'
+                                  : u.approvalStatus == 'APPROVED'
+                                  ? 'ACTIVE'
+                                  : u.approvalStatus) ==
+                              filter) &&
+                      (q.isEmpty ||
+                          [
+                            u.businessName,
+                            u.name,
+                            u.email,
+                            u.mobile,
+                          ].any((v) => v.toLowerCase().contains(q))),
+                )
+                .toList();
+            final pages = (items.length / 40).ceil();
+            final p = page.clamp(0, pages == 0 ? 0 : pages - 1);
+            return ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                const AdminHeader(
+                  'Businesses',
+                  'Get to know every owner, review registrations and manage business activity.',
+                  icon: Icons.business_outlined,
+                ),
+                AdminMetrics({
+                  'Registered': all.length,
+                  'Awaiting approval': all.where((u) => u.isPending).length,
+                }),
+                const SizedBox(height: 20),
+                TextField(
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: 'Search business, owner, phone or email',
+                  ),
+                  onChanged: (v) => setState(() {
+                    search = v;
+                    page = 0;
+                  }),
+                ),
+                const SizedBox(height: 14),
+                AdminStatusTabs(
+                  values: const [
+                    'ALL',
+                    'PENDING_APPROVAL',
+                    'ACTIVE',
+                    'REJECTED',
+                    'SUSPENDED',
+                  ],
+                  selected: filter,
+                  onChanged: (v) => setState(() {
+                    filter = v;
+                    page = 0;
+                  }),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  '${items.length} businesses',
+                  style: const TextStyle(
+                    color: adminMuted,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (items.isEmpty)
+                  const EmptyState('No businesses match these filters.'),
+                ...items.skip(p * 40).take(40).map((u) {
+                  final name = u.businessName.isEmpty ? u.name : u.businessName;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 14),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(18),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => AdminBusinessDetailScreen(user: u),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                CircleAvatar(
+                                  radius: 26,
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  child: Text(
+                                    name.isEmpty ? 'B' : name[0].toUpperCase(),
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        name,
+                                        style: const TextStyle(
+                                          fontSize: 19,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Owner · ${u.name}',
+                                        style: const TextStyle(
+                                          color: adminMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.chevron_right),
+                              ],
+                            ),
+                            const Divider(height: 28),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 10,
+                              children: [
+                                AdminBadge(
+                                  u.isPending
+                                      ? 'PENDING_APPROVAL'
+                                      : u.approvalStatus,
+                                ),
+                                Text(
+                                  u.mobile,
+                                  style: const TextStyle(color: adminMuted),
+                                ),
+                              ],
+                            ),
+                            if (u.email.isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              Text(
+                                u.email,
+                                style: const TextStyle(
+                                  color: adminMuted,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+                if (pages > 1)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      IconButton(
+                        onPressed: p > 0
+                            ? () => setState(() => page = p - 1)
+                            : null,
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      Text('Page ${p + 1} of $pages'),
+                      IconButton(
+                        onPressed: p + 1 < pages
+                            ? () => setState(() => page = p + 1)
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+              ],
+            );
+          },
+        ),
+  );
 }
 
 class AdminBusinessDetailScreen extends ConsumerStatefulWidget {
   const AdminBusinessDetailScreen({super.key, required this.user});
   final BusinessUser user;
   @override
-  ConsumerState<AdminBusinessDetailScreen> createState() => _AdminBusinessDetailScreenState();
+  ConsumerState<AdminBusinessDetailScreen> createState() =>
+      _AdminBusinessDetailScreenState();
 }
 
-class _AdminBusinessDetailScreenState extends ConsumerState<AdminBusinessDetailScreen> with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 7, vsync: this);
-  Map<String,dynamic>? detail;
-  Map<String,dynamic>? resources;
-  bool loading = true;
+class _AdminBusinessDetailScreenState
+    extends ConsumerState<AdminBusinessDetailScreen>
+    with SingleTickerProviderStateMixin {
+  late final tabs = TabController(length: 6, vsync: this);
+  Map<String, dynamic>? detail, resources;
   String? error;
+  bool loading = true, busy = false;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   @override
-  void initState() { super.initState(); _load(); }
-  @override
-  void dispose() { _tabs.dispose(); super.dispose(); }
+  void dispose() {
+    tabs.dispose();
+    super.dispose();
+  }
 
   Future<void> _load() async {
-    setState(() { loading = true; error = null; });
+    setState(() {
+      loading = true;
+      error = null;
+    });
     try {
-      final a = (await ref.read(apiClientProvider).get('/api/admin/businesses/${widget.user.id}') as Map).cast<String,dynamic>();
-      final b = (await ref.read(apiClientProvider).get('/api/admin/businesses/${widget.user.id}/resources') as Map).cast<String,dynamic>();
-      if (mounted) setState(() { detail = a; resources = b; loading = false; });
-    } catch(e) { if (mounted) setState(() { error = e is ApiException ? e.message : '$e'; loading = false; }); }
-  }
-
-  Future<void> _action(String action) async {
-    try {
-      await ref.read(apiClientProvider).post('/api/admin/businesses/${widget.user.id}/$action', data: {});
-      ref.invalidate(businessUsersProvider); ref.invalidate(adminOverviewProvider); await _load();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Business status updated')));
-    } catch(e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e is ApiException ? e.message : '$e'))); }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Business Details')),
-      body: loading ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Text(error!)) : _body(),
-    );
-  }
-
-  Widget _body() {
-    final b = ((resources?['business'] ?? detail?['business']) as Map?)?.cast<String,dynamic>() ?? {};
-    final counts = (detail?['counts'] as Map?)?.cast<String,dynamic>() ?? {};
-    final wa = ((resources?['whatsapp'] ?? detail?['whatsapp']) as Map?)?.cast<String,dynamic>() ?? {};
-    final status = '${b['status'] ?? widget.user.approvalStatus}';
-    return Column(children: [
-      Padding(padding: const EdgeInsets.fromLTRB(16, 14, 16, 10), child: Column(children: [
-        Card(child: Padding(padding: const EdgeInsets.all(16), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          CircleAvatar(radius: 30, backgroundColor: const Color(0xFFE6F0FF), child: Text('${b['businessName'] ?? widget.user.businessName}'.isNotEmpty ? '${b['businessName'] ?? widget.user.businessName}'[0].toUpperCase() : 'B', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF0867FF)))),
-          const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('${b['businessName'] ?? widget.user.businessName}', style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w900, color: Color(0xFF071A63))),
-            Text('${b['ownerName'] ?? widget.user.name}', style: const TextStyle(color: Color(0xFF62729B))),
-            const SizedBox(height: 6),
-            Wrap(spacing: 8, runSpacing: 6, children: [
-              _badge(status, const Color(0xFF0867FF)),
-              _badge('WhatsApp ${wa['status'] ?? 'NOT_CONNECTED'}', (wa['status'] == 'CONNECTED') ? const Color(0xFF0F9D67) : const Color(0xFFF59E0B)),
-            ]),
-          ])),
-        ]))),
-        const SizedBox(height: 10),
-        SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
-          _stat('Contacts', counts['contacts'] ?? (resources?['contacts'] as List?)?.length ?? 0),
-          _stat('Templates', counts['templates'] ?? (resources?['templates'] as List?)?.length ?? 0),
-          _stat('Automations', counts['automations'] ?? (resources?['automations'] as List?)?.length ?? 0),
-          _stat('Messages', counts['messages'] ?? (resources?['messages'] as List?)?.length ?? 0),
-        ])),
-        const SizedBox(height: 10),
-        Row(children: [
-          if (status == 'PENDING_APPROVAL' || status == 'PENDING') ...[
-            Expanded(child: OutlinedButton(onPressed: () => _action('reject'), child: const Text('Reject'))), const SizedBox(width: 8), Expanded(child: FilledButton(onPressed: () => _action('approve'), child: const Text('Approve'))),
-          ] else if (status == 'ACTIVE' || status == 'APPROVED') Expanded(child: OutlinedButton(onPressed: () => _action('suspend'), child: const Text('Suspend Business')))
-          else if (status == 'SUSPENDED') Expanded(child: FilledButton(onPressed: () => _action('reactivate'), child: const Text('Reactivate Business'))),
-        ]),
-      ])),
-      TabBar(controller: _tabs, isScrollable: true, tabs: const [Tab(text:'Overview'),Tab(text:'WhatsApp'),Tab(text:'Contacts'),Tab(text:'Templates'),Tab(text:'Automations'),Tab(text:'Messages'),Tab(text:'Activity')]),
-      Expanded(child: TabBarView(controller: _tabs, children: [
-        _overview(b), _whatsapp(wa), _rawList('Contacts', resources?['contacts']), _rawList('Templates', resources?['templates']), _rawList('Automations', resources?['automations']), _rawList('Messages', resources?['messages']), _activity(resources?['activity']),
-      ])),
-    ]);
-  }
-
-  Widget _overview(Map<String,dynamic> b) => ListView(padding: const EdgeInsets.all(16), children: [
-    _section('Owner Details', [
-      _row('Owner Name','${b['ownerName'] ?? widget.user.name}'), _row('Mobile','${b['mobile'] ?? widget.user.mobile}'), _row('Email','${b['email'] ?? widget.user.email}'),
-    ]),
-    const SizedBox(height: 12),
-    _section('Business Profile', [
-      _row('Business Name','${b['businessName'] ?? widget.user.businessName}'), _row('Address','${b['businessAddress'] ?? widget.user.businessAddress}'), _row('Status','${b['status'] ?? ''}'),
-      _row('Registered', _date(b['createdAt'])), _row('Approved', _date(b['approvedAt'])), _row('Last Login', _date(b['lastLoginAt'])),
-    ]),
-  ]);
-
-  Future<void> _businessWhatsAppAction(String action) async {
-    try {
-      final path = action == 'test'
-          ? '/api/admin/businesses/${widget.user.id}/whatsapp/test'
-          : '/api/admin/businesses/${widget.user.id}/templates/sync';
-      final result = await ref.read(apiClientProvider).post(path, data: {});
-      await _load();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(action == 'test' ? 'WhatsApp connection verified for this business.' : 'Templates synced for this business.')));
+      final result = await Future.wait([
+        ref
+            .read(apiClientProvider)
+            .get('/api/admin/businesses/${widget.user.id}'),
+        ref
+            .read(apiClientProvider)
+            .get('/api/admin/businesses/${widget.user.id}/resources'),
+      ]);
+      if (mounted)
+        setState(() {
+          detail = (result[0] as Map).cast<String, dynamic>();
+          resources = (result[1] as Map).cast<String, dynamic>();
+          loading = false;
+        });
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e is ApiException ? e.message : '$e')));
+      if (mounted)
+        setState(() {
+          error = '$e';
+          loading = false;
+        });
     }
   }
 
-  Widget _whatsapp(Map<String,dynamic> wa) => ListView(padding: const EdgeInsets.all(16), children: [
-    _section('WhatsApp Connection', [
-      _row('Connection Status','${wa['status'] ?? 'NOT_CONNECTED'}'), _row('Verified Name','${wa['verifiedName'] ?? '—'}'), _row('Display Number','${wa['displayPhoneNumber'] ?? wa['businessPhone'] ?? '—'}'),
-      _row('Meta App ID','${wa['metaAppId'] ?? '—'}'), _row('Meta Business ID','${wa['metaBusinessId'] ?? '—'}'), _row('WABA ID','${wa['wabaId'] ?? wa['businessAccountId'] ?? '—'}'), _row('Phone Number ID','${wa['phoneNumberId'] ?? '—'}'), _row('Quality','${wa['qualityRating'] ?? '—'}'), _row('Last Verified', _date(wa['lastTestedAt'])),
-    ]),
-    const SizedBox(height: 12),
-    _section('Credential Storage', [
-      _row('Credentials','${wa['credentialsStored'] == true ? 'Stored securely' : 'Not configured'}'),
-      _row('Access Token','${wa['accessTokenStored'] == true ? 'Encrypted / stored' : 'Not stored'}'),
-      _row('App Secret','${wa['appSecretStored'] == true ? 'Encrypted / stored' : 'Not stored'}'),
-      _row('Webhook Token','${wa['webhookTokenStored'] == true ? 'Encrypted / stored' : 'Not stored'}'),
-    ]),
-    if ('${wa['lastConnectionError'] ?? ''}'.isNotEmpty) ...[const SizedBox(height: 12), Card(color: const Color(0xFFFFF1F2), child: Padding(padding: const EdgeInsets.all(14), child: Text('${wa['lastConnectionError']}', style: const TextStyle(color: Color(0xFF8F1D2C)))) )],
-    const SizedBox(height: 12),
-    Row(children: [
-      Expanded(child: FilledButton.icon(onPressed: wa['credentialsStored'] == true ? () => _businessWhatsAppAction('test') : null, icon: const Icon(Icons.verified_outlined), label: const Text('Test Connection'))),
-      const SizedBox(width: 8),
-      Expanded(child: OutlinedButton.icon(onPressed: wa['credentialsStored'] == true ? () => _businessWhatsAppAction('sync') : null, icon: const Icon(Icons.sync), label: const Text('Sync Templates'))),
-    ]),
-    const SizedBox(height: 12),
-    const Card(child: Padding(padding: EdgeInsets.all(14), child: Text('Admin can monitor and operate this business connection, but raw access tokens/secrets are never displayed. Every send still uses this business’s own encrypted WhatsApp credentials.'))),
-  ]);
-
-  Widget _activity(dynamic value) {
-    final list = value is List ? value : const [];
-    if (list.isEmpty) return const Center(child: Text('No activity recorded yet.'));
-    return ListView.builder(padding: const EdgeInsets.all(12), itemCount: list.length, itemBuilder: (_, i) {
-      final m = list[i] is Map ? (list[i] as Map).cast<String,dynamic>() : <String,dynamic>{};
-      return Card(child: ListTile(leading: const Icon(Icons.history), title: Text('${m['action'] ?? 'Activity'}', style: const TextStyle(fontWeight: FontWeight.w800)), subtitle: Text('${m['actor'] ?? ''}\n${_date(m['createdAt'])}'), isThreeLine: true));
-    });
+  Future<void> _action(String action) async {
+    if (busy ||
+        !await adminConfirm(
+          context,
+          '${adminLabel(action)} business?',
+          'Update the account status for ${widget.user.businessName.isEmpty ? widget.user.name : widget.user.businessName}?',
+        ) ||
+        !mounted)
+      return;
+    setState(() => busy = true);
+    try {
+      await ref
+          .read(apiClientProvider)
+          .post('/api/admin/businesses/${widget.user.id}/$action', data: {});
+      ref.invalidate(businessUsersProvider);
+      ref.invalidate(adminOverviewProvider);
+      await _load();
+      if (mounted) showAppMessage(context, 'Business status updated.');
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
-  Widget _rawList(String title, dynamic value) {
-    final list = value is List ? value : const [];
-    if (list.isEmpty) return Center(child: Text('No $title records.'));
-    return ListView.builder(padding: const EdgeInsets.all(12), itemCount: list.length, itemBuilder: (_,i) {
-      final m = list[i] is Map ? (list[i] as Map).cast<String,dynamic>() : <String,dynamic>{};
-      String primary = '$title #${m['id'] ?? i+1}'; String secondary=''; String trailing='';
-      if (title=='Contacts') { primary='${m['name'] ?? ''}'; secondary='${m['phone'] ?? ''}${m['email']!=null?' • ${m['email']}':''}'; trailing='${m['optIn']==true?'OPT-IN':'NO OPT-IN'}'; }
-      if (title=='Templates') { primary='${m['name'] ?? ''}'; secondary='${m['category'] ?? ''} • ${m['language'] ?? ''}'; trailing='${m['status'] ?? ''}'; }
-      if (title=='Automations') { primary='${m['templateName'] ?? 'Automation'}'; secondary='${m['contactName'] ?? ''} • ${_date(m['scheduledAt'])}'; trailing='${m['status'] ?? ''}'; }
-      if (title=='Messages') { primary='${m['templateName'] ?? 'Message'}'; secondary='${m['contactName'] ?? ''} ${m['contactPhone'] ?? ''}'; trailing='${m['status'] ?? ''}'; }
-      return Card(child: ListTile(title: Text(primary, style: const TextStyle(fontWeight: FontWeight.w800)), subtitle: Text(secondary), trailing: Text(trailing, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800))));
-    });
+  Future<void> _whatsappAction(String action) async {
+    setState(() => busy = true);
+    try {
+      await ref
+          .read(apiClientProvider)
+          .post(
+            action == 'test'
+                ? '/api/admin/businesses/${widget.user.id}/whatsapp/test'
+                : '/api/admin/businesses/${widget.user.id}/templates/sync',
+            data: {},
+          );
+      ref.invalidate(adminRecordsProvider('/api/admin/templates'));
+      await _load();
+      if (mounted)
+        showAppMessage(
+          context,
+          action == 'test' ? 'Connection verified.' : 'Templates synced.',
+        );
+    } catch (e) {
+      if (mounted) showAppMessage(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
-  Widget _section(String title, List<Widget> children) => Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF071A63))), const SizedBox(height: 12), ...children])));
-  Widget _row(String k,String v)=>Padding(padding: const EdgeInsets.symmetric(vertical: 7), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children:[Expanded(child:Text(k,style:const TextStyle(color:Color(0xFF6C7896)))),Expanded(child:Text(v.isEmpty?'—':v,textAlign:TextAlign.right,style:const TextStyle(fontWeight:FontWeight.w800))) ]));
-  Widget _badge(String t, Color c)=>Container(padding:const EdgeInsets.symmetric(horizontal:10,vertical:5),decoration:BoxDecoration(color:c.withOpacity(.1),borderRadius:BorderRadius.circular(20)),child:Text(t.replaceAll('_',' '),style:TextStyle(color:c,fontSize:10,fontWeight:FontWeight.w900)));
-  Widget _stat(String label,dynamic value)=>Container(width:118,margin:const EdgeInsets.only(right:8),padding:const EdgeInsets.all(12),decoration:BoxDecoration(color:Colors.white,border:Border.all(color:const Color(0xFFE2EAF7)),borderRadius:BorderRadius.circular(14)),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('$value',style:const TextStyle(fontSize:20,fontWeight:FontWeight.w900,color:Color(0xFF071A63))),Text(label,style:const TextStyle(color:Color(0xFF6C7896),fontSize:12))]));
-  String _date(dynamic v){ final d=DateTime.tryParse('${v ?? ''}'); return d==null?'—':DateFormat('dd MMM yyyy, hh:mm a').format(d.toLocal()); }
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Business details'),
+      actions: [
+        IconButton(
+          onPressed: loading ? null : _load,
+          icon: const Icon(Icons.refresh),
+        ),
+      ],
+    ),
+    body: loading
+        ? const Center(child: CircularProgressIndicator())
+        : error != null
+        ? ErrorState(error!, onRetry: _load)
+        : _body(),
+  );
+  Widget _body() {
+    final b = (resources?['business'] as Map? ?? {}).cast<String, dynamic>();
+    final wa = (resources?['whatsapp'] as Map? ?? {}).cast<String, dynamic>();
+    final counts = detail?['counts'] as Map? ?? {};
+    final status = '${b['status'] ?? widget.user.approvalStatus}';
+    final name = '${b['businessName'] ?? widget.user.businessName}';
+    return NestedScrollView(
+      headerSliverBuilder: (c, scrolled) => [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AdminPanel(
+                  title: name.isEmpty ? widget.user.name : name,
+                  trailing: AdminBadge(status),
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primaryContainer,
+                          child: const Icon(Icons.business, size: 30),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${b['ownerName'] ?? widget.user.name}',
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '${b['mobile'] ?? widget.user.mobile}',
+                                style: const TextStyle(color: adminMuted),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '${b['email'] ?? widget.user.email}',
+                                style: const TextStyle(color: adminMuted),
+                              ),
+                              const SizedBox(height: 12),
+                              AdminBadge('${wa['status'] ?? 'NOT_CONNECTED'}'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                AdminMetrics({
+                  'Contacts': counts['contacts'] ?? 0,
+                  'Templates': counts['templates'] ?? 0,
+                  'Schedules': counts['automations'] ?? 0,
+                  'Messages': counts['messages'] ?? 0,
+                }),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    if (['PENDING', 'PENDING_APPROVAL'].contains(status))
+                      ...['approve', 'reject'].map(
+                        (a) => FilledButton.tonal(
+                          onPressed: busy ? null : () => _action(a),
+                          child: Text(adminLabel(a)),
+                        ),
+                      ),
+                    if (['ACTIVE', 'APPROVED'].contains(status))
+                      OutlinedButton(
+                        onPressed: busy ? null : () => _action('suspend'),
+                        child: const Text('Suspend business'),
+                      ),
+                    if (status == 'SUSPENDED')
+                      FilledButton(
+                        onPressed: busy ? null : () => _action('reactivate'),
+                        child: const Text('Reactivate business'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: _BusinessTabs(
+            TabBar(
+              controller: tabs,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              tabs: const [
+                Tab(text: 'Overview'),
+                Tab(text: 'WhatsApp'),
+                Tab(text: 'Contacts'),
+                Tab(text: 'Templates'),
+                Tab(text: 'Scheduled messages'),
+                Tab(text: 'Activity'),
+              ],
+            ),
+            Theme.of(context).colorScheme.surface,
+          ),
+        ),
+      ],
+      body: TabBarView(
+        controller: tabs,
+        children: [
+          _overview(b),
+          _whatsapp(wa),
+          AdminContactsScreen(businessId: widget.user.id),
+          AdminTemplatesScreen(businessId: widget.user.id),
+          AdminAutomationsScreen(businessId: widget.user.id),
+          _activity(),
+        ],
+      ),
+    );
+  }
+
+  Widget _overview(Map<String, dynamic> b) => ListView(
+    padding: const EdgeInsets.all(20),
+    children: [
+      AdminPanel(
+        title: 'Owner information',
+        children: [
+          adminInfo('Full name', b['ownerName'] ?? widget.user.name),
+          adminInfo('Phone', b['mobile'] ?? widget.user.mobile),
+          adminInfo('Email', b['email'] ?? widget.user.email),
+        ],
+      ),
+      AdminPanel(
+        title: 'Business information',
+        children: [
+          adminInfo('Business name', b['businessName']),
+          adminInfo('Address', b['businessAddress']),
+          adminInfo('Account status', adminLabel('${b['status']}')),
+          adminInfo('Registered', adminDate(b['createdAt'])),
+          adminInfo('Approved', adminDate(b['approvedAt'])),
+          adminInfo('Last login', adminDate(b['lastLoginAt'])),
+        ],
+      ),
+    ],
+  );
+  Widget _whatsapp(Map<String, dynamic> wa) => ListView(
+    padding: const EdgeInsets.all(20),
+    children: [
+      AdminPanel(
+        title: 'WhatsApp connection',
+        trailing: AdminBadge('${wa['status']}'),
+        children: [
+          adminInfo('Verified business', wa['verifiedName']),
+          adminInfo(
+            'WhatsApp number',
+            wa['displayPhoneNumber'] ?? wa['businessPhone'],
+          ),
+          adminInfo('Quality rating', wa['qualityRating']),
+          adminInfo('Last checked', adminDate(wa['lastTestedAt'])),
+        ],
+      ),
+      AdminPanel(
+        title: 'Meta account details',
+        children: [
+          adminInfo('App ID', wa['metaAppId']),
+          adminInfo('Business ID', wa['metaBusinessId']),
+          adminInfo('Meta business name', wa['metaBusinessName']),
+          adminInfo('WABA ID', wa['wabaId'] ?? wa['businessAccountId']),
+          adminInfo('WABA name', wa['wabaName']),
+          adminInfo('Phone number ID', wa['phoneNumberId']),
+        ],
+      ),
+      AdminPanel(
+        title: 'Secure connection',
+        children: [
+          ...{
+            'Credentials': 'credentialsStored',
+            'Access token': 'accessTokenStored',
+            'App secret': 'appSecretStored',
+            'Webhook token': 'webhookTokenStored',
+          }.entries.map(
+            (e) => adminInfo(
+              e.key,
+              wa[e.value] == true ? 'Stored securely' : 'Not configured',
+            ),
+          ),
+          if ('${wa['lastConnectionError'] ?? ''}'.isNotEmpty)
+            adminInfo('Connection error', wa['lastConnectionError']),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              FilledButton.icon(
+                onPressed: busy || wa['credentialsStored'] != true
+                    ? null
+                    : () => _whatsappAction('test'),
+                icon: const Icon(Icons.verified_outlined),
+                label: const Text('Test connection'),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy || wa['credentialsStored'] != true
+                    ? null
+                    : () => _whatsappAction('sync'),
+                icon: const Icon(Icons.sync),
+                label: const Text('Sync templates'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ],
+  );
+  Widget _activity() {
+    final rows = (resources?['activity'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const AdminHeader(
+          'Recent activity',
+          'The latest 50 administrative actions for this business.',
+          icon: Icons.history,
+        ),
+        if (rows.isEmpty) const EmptyState('No recorded activity.'),
+        ...rows.map(
+          (m) => Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              contentPadding: const EdgeInsets.all(16),
+              leading: const Icon(Icons.history),
+              title: Text(
+                adminLabel('${m['action']}'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                '${m['actor'] ?? ''}\n${adminDate(m['createdAt'])}',
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BusinessTabs extends SliverPersistentHeaderDelegate {
+  _BusinessTabs(this.tabs, this.color);
+  final TabBar tabs;
+  final Color color;
+  @override
+  double get minExtent => tabs.preferredSize.height;
+  @override
+  double get maxExtent => minExtent;
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) => Material(color: color, child: tabs);
+  @override
+  bool shouldRebuild(_BusinessTabs old) =>
+      old.tabs != tabs || old.color != color;
 }

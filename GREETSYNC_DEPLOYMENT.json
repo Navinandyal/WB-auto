@@ -1,9 +1,7 @@
 {
-    "projectId":  "e1297f67-4f5b-4159-be56-73178b459d60",
-    "projectName":  "agile-forgiveness",
-    "environmentId":  "d52cfe49-1c90-4449-9582-b853e74706f0",
-    "environmentName":  "production",
-    "backendService":  "wishflow-backend",
-    "databaseService":  "",
-    "backendUrl":  "https://wishflow-backend-production-e75d.up.railway.app"
+  "provider": "render",
+  "databaseProvider": "supabase",
+  "serviceId": "",
+  "backendUrl": "",
+  "customDomainVerified": false
 }

@@ -1,3 +1,5 @@
+> Hosting update: use [RENDER_SUPABASE_START_HERE.md](RENDER_SUPABASE_START_HERE.md). The Railway instructions below are historical.
+
 # GreetSync — Facebook / WhatsApp business connection
 
 ## What was fixed

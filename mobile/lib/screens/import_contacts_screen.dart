@@ -1,3 +1,5 @@
+import '../core/contact_name.dart';
+import '../widgets/import_group_option.dart';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -30,6 +32,7 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
 
   List<Map<String, dynamic>> rows = [];
   String? fileName;
+  String? groupName;
   bool importing = false;
   Map<String, dynamic>? result;
 
@@ -112,6 +115,7 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
         row.putIfAbsent('opt_in', () => 'true');
         row.putIfAbsent('notes', () => '');
         if ('${row['opt_in']}'.trim().isEmpty) row['opt_in'] = 'true';
+        row['name'] = contactName(row['name']);
         parsed.add(row);
       }
       if (parsed.isEmpty)
@@ -162,7 +166,12 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
   }
 
   Future<void> _import() async {
-    if (rows.isEmpty) return;
+    if (rows.isEmpty || importing || result != null) return;
+    final groupError = importGroupError(groupName);
+    if (groupError != null) {
+      showAppMessage(context, groupError, error: true);
+      return;
+    }
     if (rows.length > maxRows) {
       showAppMessage(
         context,
@@ -175,8 +184,15 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
     try {
       final data = await ref
           .read(apiClientProvider)
-          .post('/api/contacts/import', data: {'rows': rows});
+          .post(
+            '/api/contacts/import',
+            data: {
+              'rows': rows,
+              if (groupName != null) 'createGroupName': groupName!.trim(),
+            },
+          );
       ref.invalidate(contactsProvider);
+      ref.invalidate(contactGroupsProvider);
       ref.invalidate(dashboardProvider);
       ref.invalidate(billingProvider);
       ref.invalidate(birthdaysProvider);
@@ -304,8 +320,14 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
                 ),
               ),
           const SizedBox(height: 14),
+          ImportGroupOption(
+            value: groupName,
+            enabled: !importing && result == null,
+            onChanged: (value) => setState(() => groupName = value),
+          ),
+          const SizedBox(height: 12),
           FilledButton(
-            onPressed: importing ? null : _import,
+            onPressed: importing || result != null ? null : _import,
             child: importing
                 ? const SizedBox(
                     width: 22,
@@ -315,7 +337,11 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
                       strokeWidth: 2,
                     ),
                   )
-                : Text('Import ${rows.length} Contacts'),
+                : Text(
+                    result != null
+                        ? 'Imported'
+                        : 'Import ${rows.length} Contacts',
+                  ),
           ),
         ],
         if (result != null) ...[
@@ -335,6 +361,10 @@ class _ImportContactsScreenState extends ConsumerState<ImportContactsScreen> {
                   Text('Imported: ${result!['imported']}'),
                   Text('Skipped duplicates: ${result!['skipped']}'),
                   Text('Failed: ${result!['failed']}'),
+                  if (result!['group'] is Map)
+                    Text(
+                      'Group: ${result!['group']['name']} • ${result!['group']['memberCount']} contacts',
+                    ),
                   if (result!['birthdayScheduled'] != null)
                     Text(
                       'Birthday automations scheduled: ${result!['birthdayScheduled']}',

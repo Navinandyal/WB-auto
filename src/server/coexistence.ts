@@ -1,3 +1,5 @@
+import { contactName } from './contact-name.ts';
+import { metaErrorText } from './marketing-limits.ts';
 import { pool } from '../db/index.ts';
 import { createNotification } from './notifications.ts';
 
@@ -33,12 +35,12 @@ export async function digestWhatsAppChange(wabaId:string,change:any):Promise<voi
       if(state.type!=='contact')continue;
       const phone=digits(state.contact?.phone_number);if(!phone)continue;
       if(String(state.action).toLowerCase()==='delete'||String(state.action).toLowerCase()==='remove')continue; // retain historical GreetSync contacts
-      const name=String(state.contact?.full_name||state.contact?.first_name||phone);
+      const name=contactName(state.contact?.full_name||state.contact?.first_name||phone);
       await pool.query(`INSERT INTO contacts(owner_user_id,name,phone,opt_in,notes) SELECT $1,$2,$3,FALSE,'Synced from WhatsApp Business app; consent must be confirmed before automation.' WHERE NOT EXISTS(SELECT 1 FROM contacts WHERE owner_user_id=$1 AND regexp_replace(phone,'[^0-9]','','g')=$4)`,[owner,name,'+'+phone,phone]);
     }
     const ensureContact=async(phone:string,name?:string)=>{
       const found=await pool.query(`SELECT id FROM contacts WHERE owner_user_id=$1 AND regexp_replace(phone,'[^0-9]','','g')=$2 LIMIT 1`,[owner,phone]);if(found.rows[0])return found.rows[0].id;
-      const added=await pool.query('INSERT INTO contacts(owner_user_id,name,phone,opt_in) VALUES($1,$2,$3,FALSE) RETURNING id',[owner,name||phone,'+'+phone]);return added.rows[0].id;
+      const added=await pool.query('INSERT INTO contacts(owner_user_id,name,phone,opt_in) VALUES($1,$2,$3,FALSE) RETURNING id',[owner,contactName(name)||phone,'+'+phone]);return added.rows[0].id;
     };
     const saveMessage=async(m:any,threadPhone?:string,forceOutbound=false)=>{
       if(!m.id)return;
@@ -86,7 +88,7 @@ export async function digestWhatsAppChange(wabaId:string,change:any):Promise<voi
       }
       const normalized=webhookStatus(row.status,next), stamp=new Date((Number(status.timestamp)||Date.now()/1000)*1000).toISOString();
       const metaError=status.errors?.[0];
-      const errorText=normalized==='FAILED' && next==='FAILED' ? [metaError?.title,metaError?.message,metaError?.error_data?.details].filter(Boolean).join(': ') || 'WhatsApp delivery failed.' : null;
+      const errorText=normalized==='FAILED' && next==='FAILED' ? metaErrorText(metaError) : null;
       // Event timestamps belong to the incoming event, not the final status.
       // A late SENT must not rewrite an already recorded delivery/read time.
       await pool.query(`UPDATE messages SET status=$1,

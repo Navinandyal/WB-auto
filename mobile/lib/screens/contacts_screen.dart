@@ -1,3 +1,4 @@
+import '../core/contact_name.dart';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
@@ -980,7 +981,7 @@ class _ContactEditorScreenState extends ConsumerState<ContactEditorScreen> {
     setState(() => saving = true);
     try {
       final payload = {
-        'name': name.text.trim(),
+        'name': contactName(name.text),
         'phone': fullPhone,
         'email': email.text.trim().isEmpty ? null : email.text.trim(),
         'dob': dob.text.trim().isEmpty ? null : dob.text.trim(),

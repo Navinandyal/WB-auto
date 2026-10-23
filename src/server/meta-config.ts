@@ -1,7 +1,7 @@
 import { pool } from '../db/index.ts';
 import { decryptSecret } from './credential-crypto.ts';
 export async function metaPlatformConfig() {
-  const detectedBaseUrl=String(process.env.PUBLIC_BASE_URL || process.env.META_PUBLIC_BASE_URL || process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')).trim().replace(/\/$/, '');
+  const detectedBaseUrl=String(process.env.PUBLIC_BASE_URL || process.env.META_PUBLIC_BASE_URL || process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')).trim().replace(/\/$/, '');
   try {
     const result = await pool.query('SELECT meta_app_id, meta_app_secret, embedded_signup_config_id, graph_api_version, public_base_url, webhook_verify_token FROM platform_meta_settings WHERE id = 1 LIMIT 1');
     const row: any = result.rows?.[0];

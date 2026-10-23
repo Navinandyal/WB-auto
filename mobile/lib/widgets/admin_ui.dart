@@ -246,7 +246,7 @@ class AdminBusinessFilter extends ConsumerWidget {
       .when(
         data: (businesses) => DropdownButtonFormField<int>(
           key: ValueKey(selected),
-          initialValue: selected ?? 0,
+          initialValue: businesses.any((b) => b.id == selected) ? selected : 0,
           isExpanded: true,
           decoration: const InputDecoration(
             labelText: 'Business',
