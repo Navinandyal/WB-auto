@@ -1,4 +1,6 @@
-import {templateListSelect,compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
+import {createTrafficMetrics} from './src/server/traffic-metrics.ts';
+import {sendingContactSelect,sendingBusinessSelect,accountStatusSelect,approvedTemplateIdentity} from './src/server/traffic-projections.ts';
+import {automationListSelect,validateAudience,readAutomationPage,templateListSelect,compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
 import { createPasswordResetHandlers } from './src/server/password-reset.ts';
 import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
 import { contactName } from './src/server/contact-name.ts';
@@ -68,6 +70,8 @@ import {
 } from './src/server/subscriptions.ts';
 
 const app = express();
+const trafficMetrics=createTrafficMetrics();
+app.use(trafficMetrics.middleware);
 // Correlate failed phone requests with Render logs without logging credentials,
 // query strings, contacts, template contents or reset codes.
 app.use((req, res, next) => {
@@ -736,7 +740,7 @@ app.get('/api/profile/monthly-analysis', requireAuth, async (req: AuthRequest, r
 });
 
 app.get('/api/account/status',requireAuth,async(req:AuthRequest,res)=>{
-  try{const [account]=await db.select().from(users).where(eq(users.id,req.user!.id)).limit(1);if(!account)return res.status(401).json({error:'Account unavailable.'});
+  try{const [account]=await db.select(accountStatusSelect).from(users).where(eq(users.id,req.user!.id)).limit(1);if(!account)return res.status(401).json({error:'Account unavailable.'});
     const access=await getPackageAccessSummary(account.id);res.json({status:account.approvalStatus,isActive:account.isActive,billingPending:access.pending.length>0,packageActive:access.active,pushConfigured:Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)});
   }catch(e:any){res.status(500).json({error:'Unable to load account status.'});}
 });
@@ -1366,7 +1370,7 @@ app.get('/api/dashboard/stats', requireAuth, async (req: AuthRequest, res) => {
       db.select({ val: count() }).from(messages).where(and(eq(messages.ownerUserId, ownerUserId), eq(messages.status, 'FAILED'), gte(messages.createdAt,todayStart), lte(messages.createdAt,todayEnd))),
       db.select({ val: count() }).from(messages).where(and(eq(messages.ownerUserId, ownerUserId), inArray(messages.status, ['DELIVERED','READ']), gte(messages.createdAt,todayStart), lte(messages.createdAt,todayEnd))),
       db.select({ val: count() }).from(messages).where(and(eq(messages.ownerUserId, ownerUserId), eq(messages.status, 'READ'), gte(messages.createdAt,todayStart), lte(messages.createdAt,todayEnd))),
-      db.select().from(messageTemplates).where(and(eq(messageTemplates.ownerUserId, ownerUserId), eq(messageTemplates.status,'APPROVED'))),
+      db.select(approvedTemplateIdentity).from(messageTemplates).where(and(eq(messageTemplates.ownerUserId, ownerUserId), eq(messageTemplates.status,'APPROVED'))),
       db.select({ val: count() }).from(contactGroups).where(eq(contactGroups.ownerUserId, ownerUserId)),
       db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, ownerUserId)).limit(1),
       db.select({
@@ -2258,6 +2262,11 @@ function validIsoBirthDate(value: unknown): string | null {
   return text;
 }
 
+app.get('/api/contacts/audience',requireAuth,async(req:AuthRequest,res)=>{
+ try{res.json(await db.select(sendingContactSelect).from(contacts).where(eq(contacts.ownerUserId,req.user!.id)).orderBy(asc(contacts.name),asc(contacts.id)));}
+ catch{res.status(503).json({error:'Contact selection is temporarily unavailable.'});}
+});
+
 app.get('/api/contacts', requireAuth, async (req: AuthRequest, res) => {
   try {
     const search = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
@@ -2629,9 +2638,9 @@ app.get('/api/contact-groups/:id', requireAuth, async (req: AuthRequest, res) =>
       phone: contacts.phone,
       optIn: contacts.optIn,
       dob: contacts.dob,
-      avatarData: contacts.avatarData,
+      avatarData: req.query.purpose==='audience'?sql<string|null>`NULL`:contacts.avatarData,
     }).from(contactGroupMembers).innerJoin(contacts, eq(contactGroupMembers.contactId, contacts.id))
-      .where(eq(contactGroupMembers.groupId,id));
+      .where(and(eq(contactGroupMembers.groupId,id),eq(contacts.ownerUserId,req.user!.id)));
     res.json({ group, members: members.map(member=>({...member,name:contactName(member.name)})) });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to load group.' }); }
 });
@@ -3261,36 +3270,29 @@ app.post('/api/whatsapp/templates/seed-defaults', requireAuth, (_req: AuthReques
    6. AUTOMATIONS & SCHEDULING
    ========================================================================= */
 
-const automationSelect = {
-  id: automations.id,
-  ownerUserId: automations.ownerUserId,
-  contactId: automations.contactId,
-  templateId: automations.templateId,
-  variables: automations.variables,
-  scheduledAt: automations.scheduledAt,
-  timezone: automations.timezone,
-  status: automations.status,
-  templateSnapshot: compactSnapshot(automations.templateSnapshot),
-  sendRequestId: automations.sendRequestId,
-  executedAt: automations.executedAt,
-  errorMessage: automations.errorMessage,
-  createdAt: automations.createdAt,
-  contactName: contacts.name,
-  contactPhone: contacts.phone,
-  contactOptIn: contacts.optIn,
-  templateName: messageTemplates.name,
-  templateLanguage: messageTemplates.language,
-  templateStatus: messageTemplates.status,
-  templateComponents: sql`CASE WHEN ${automations.templateSnapshot} IS NOT NULL THEN '[]'::jsonb ELSE ${compactComponents(messageTemplates.components)} END`,
-};
+const automationSelect = automationListSelect;
 
 // Small status-only reads never fetch message/template/media bodies.
+app.get('/api/admin/traffic',requireAuth,requireAdmin,(_req,res)=>res.json(trafficMetrics.snapshot()));
+
 app.get('/api/automation-statuses',requireAuth,async(req:AuthRequest,res)=>{
  try{
   const owner=req.user!.role==='admin'?null:req.user!.id;
   const rows=await readAutomationStatuses(pool,owner,req.query.ids);
   res.set('Cache-Control','private, no-store');res.json(rows);
  }catch(error:any){res.status(error.statusCode===400?400:503).json({error:error.statusCode===400?error.message:'Message status is temporarily unavailable.'});}
+});
+
+app.get('/api/automations/feed',requireAuth,async(req:AuthRequest,res)=>{
+ try{res.set('Cache-Control','private, no-store');res.json(await readAutomationPage(db,req.user!.role==='admin'?null:req.user!.id,req.query));}
+ catch(e:any){res.status(e.statusCode===400?400:503).json({error:e.statusCode===400?e.message:'Message history is temporarily unavailable.'});}
+});
+app.get('/api/automation-reminders',requireAuth,async(req:AuthRequest,res)=>{
+ try{const rows=await db.select({id:automations.id,contactId:automations.contactId,templateId:automations.templateId,scheduledAt:automations.scheduledAt,timezone:automations.timezone,status:automations.status,contactName:contacts.name,templateName:messageTemplates.name})
+ .from(automations).innerJoin(contacts,eq(automations.contactId,contacts.id)).innerJoin(messageTemplates,eq(automations.templateId,messageTemplates.id))
+ .where(and(eq(automations.ownerUserId,req.user!.id),eq(automations.status,'SCHEDULED'),gte(automations.scheduledAt,new Date())))
+ .orderBy(asc(automations.scheduledAt),asc(automations.id)).limit(64);res.json(rows);}
+ catch{res.status(503).json({error:'Reminders are temporarily unavailable.'});}
 });
 
 app.get('/api/automations', requireAuth, async (req: AuthRequest, res) => {
@@ -3324,7 +3326,7 @@ app.get('/api/automations/:id', requireAuth, async (req: AuthRequest, res) => {
     const condition = req.user?.role === 'admin'
       ? eq(automations.id, id)
       : and(eq(automations.id, id), eq(automations.ownerUserId, req.user!.id));
-    const [item] = await db.select({...automationSelect, templateSnapshot: automations.templateSnapshot, templateComponents: messageTemplates.components}).from(automations)
+    const [item] = await db.select(automationSelect).from(automations)
       .innerJoin(contacts, eq(automations.contactId, contacts.id))
       .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
       .where(condition).limit(1);
@@ -3350,41 +3352,47 @@ app.post('/api/automations', requireAuth, requireActiveBusinessPackage, async (r
     const contactIds: number[] = [...new Set<number>(rawIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isInteger(value) && value > 0))];
     const tId = Number(req.body?.templateId), variables = req.body?.variables || {}, scheduledAt = req.body?.scheduledAt, timezone = String(req.body?.timezone || 'Asia/Kolkata');
     if (!contactIds.length || !tId || !scheduledAt) return res.status(400).json({ error: 'Audience, template and scheduled date/time are required.' });
+    validateAudience(contactIds);
     const targetDate = new Date(scheduledAt);
     if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ error: 'Invalid scheduled date or time.' });
     if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: 'Schedule must be in the future.' });
     const retryOf=await retryReference(req.user!.id,req.body?.retryOfAutomationId,contactIds,req.body?.duplicateAcknowledged===true);
     if(retryOf)Object.assign(variables,{__retry_of:retryOf});
-    await assertAutomationCapacity(req.user!.id, contactIds.length);
-    await assertMessageCapacity(req.user!.id, contactIds.length, { reserveScheduled: true, scheduledAt: targetDate });
-    const [template] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.id,tId),eq(messageTemplates.ownerUserId,req.user!.id))).limit(1);
+    const [template] = await db.select(templateListSelect).from(messageTemplates).where(and(eq(messageTemplates.id,tId),eq(messageTemplates.ownerUserId,req.user!.id))).limit(1);
     if (!template) return res.status(404).json({ error: 'Template not found in your business.' });
     if (template.status !== 'APPROVED') return res.status(400).json({ error: 'Selected template is not Meta-approved yet.' });
     const headerError = templateHeaderError(template.components as any[], variables, targetDate);
     if (headerError) return res.status(400).json({error:headerError});
-    const selectedContacts = await db.select().from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),inArray(contacts.id,contactIds)));
+    const selectedContacts = await db.select(sendingContactSelect).from(contacts).where(and(eq(contacts.ownerUserId,req.user!.id),inArray(contacts.id,contactIds)));
     if (selectedContacts.length !== contactIds.length) return res.status(400).json({ error: 'One or more selected contacts do not belong to your business.' });
     const invalid = selectedContacts.find(c=>!c.optIn);
     if(invalid) return res.status(400).json({ error: `${invalid.name} has not opted in to WhatsApp messages.` });
     // Validate every recipient before writing any jobs; a later missing variable
     // must not leave a partially scheduled batch that repeats when retried.
-    const [business]=await db.select().from(users).where(eq(users.id,req.user!.id)).limit(1);
-    const jobs=selectedContacts.map(contact => ({ownerUserId:req.user!.id,contactId:contact.id,templateId:template.id,
-      templateSnapshot:previewSnapshot(template),variables:resolveTemplateVariablesForContact(template.components as any[], variables, {...contact,name:contactName(contact.name)}, targetDate, business),
-      scheduledAt:targetDate,timezone,status:'SCHEDULED'}));
-    const created=await db.insert(automations).values(jobs).returning();
-    await db.insert(auditLogs).values({action:'AUTOMATION_SCHEDULED',actor:req.user!.phone,details:{automationIds:created.map(x=>x.id),contactIds,templateId:tId,scheduledAt:targetDate.toISOString(),timezone}});
+    const [business]=await db.select(sendingBusinessSelect).from(users).where(eq(users.id,req.user!.id)).limit(1);
+    const requestId=String(req.body?.requestId||randomBytes(16).toString('hex'));
+    if(!/^[A-Za-z0-9_-]{8,128}$/.test(requestId))return res.status(400).json({error:'Invalid schedule request ID.'});
+    const recipients=selectedContacts.map(contact=>({contact,vars:{...resolveTemplateVariablesForContact(template.components as any[],variables,{...contact,name:contactName(contact.name)},targetDate,business),__requested_schedule_at:targetDate.toISOString()}}));
+    const result=await enqueueSendNowBatch(db,req.user!.id,requestId,template,recipients,async(count,tx)=>{
+      await assertAutomationCapacity(req.user!.id,count,tx);
+      await assertMessageCapacity(req.user!.id,count,{reserveScheduled:true,scheduledAt:targetDate},tx);
+    },{at:targetDate,timezone});
+    const ids=result.map(row=>row.automationId);
+    const created=ids.length?await db.select(automationSelect).from(automations).innerJoin(contacts,eq(automations.contactId,contacts.id)).innerJoin(messageTemplates,eq(automations.templateId,messageTemplates.id))
+      .where(and(eq(automations.ownerUserId,req.user!.id),inArray(automations.id,ids))).orderBy(desc(automations.id)).limit(req.body?.compactResults===true?50:2000):[];
+    if(result.some(row=>!row.replayed)) try { await db.insert(auditLogs).values({action:'AUTOMATION_SCHEDULED',actor:req.user!.phone,details:{automationIds:ids,contactIds,templateId:tId,scheduledAt:targetDate.toISOString(),timezone}});
     await createNotification({
       userId: req.user!.id,
       targetRole: 'BUSINESS',
       type: 'AUTOMATION',
       title: 'Automation scheduled',
-      message: `${created.length} message${created.length === 1 ? '' : 's'} scheduled using ${template.name}.`,
+      message: `${result.length} message${result.length === 1 ? '' : 's'} scheduled using ${template.name}.`,
       entityType: 'AUTOMATION',
       entityId: created[0]?.id || null,
     });
-    const confirmed=confirmedAutomationRows(created,template,selectedContacts);
-    res.status(201).json({success:true,count:created.length,automations:confirmed,automation:confirmed[0]||null});
+    } catch { console.warn('[Schedule] Queue committed; notification/audit refresh pending.'); }
+    const confirmed=created;
+    res.status(201).json({success:true,requestId,count:result.length,previewCount:confirmed.length,automations:confirmed,automation:confirmed[0]||null});
   } catch(err:any){sendRuleError(res,err,'Failed to schedule automation.');}
 });
 
@@ -3462,19 +3470,19 @@ const sendNowHandler=async(req:AuthRequest,res:any)=>{
     let ids:number[]=(Array.isArray(req.body?.contactIds)?req.body.contactIds:[req.body?.contactId]).map(Number).filter((x:number)=>Number.isInteger(x)&&x>0);
     const groupIds:number[]=(Array.isArray(req.body?.groupIds)?req.body.groupIds:[]).map(Number).filter(Boolean);
     if(groupIds.length){const rows=await db.select({id:contactGroupMembers.contactId}).from(contactGroupMembers).innerJoin(contactGroups,eq(contactGroupMembers.groupId,contactGroups.id)).where(and(eq(contactGroups.ownerUserId,userId),inArray(contactGroupMembers.groupId,groupIds)));ids.push(...rows.map(r=>r.id));}
-    ids=[...new Set(ids)];if(!ids.length||ids.length>500)return res.status(400).json({error:'Select between 1 and 500 contacts.'});
-    const [template]=await db.select().from(messageTemplates).where(and(eq(messageTemplates.id,Number(req.body?.templateId)),eq(messageTemplates.ownerUserId,userId))).limit(1);
+    ids=[...new Set(ids)];validateAudience(ids);
+    const [template]=await db.select(templateListSelect).from(messageTemplates).where(and(eq(messageTemplates.id,Number(req.body?.templateId)),eq(messageTemplates.ownerUserId,userId))).limit(1);
     if(!template||template.status!=='APPROVED')return res.status(400).json({error:'Select a Meta-approved template from your business.'});
     const vars={...(req.body?.variables||{}),__send_now:'true'};
     const retryOf=await retryReference(userId,req.body?.retryOfAutomationId,ids,req.body?.duplicateAcknowledged===true);
     if(retryOf)Object.assign(vars,{__retry_of:retryOf});
     const headerError=templateHeaderError(template.components as any[],vars);if(headerError)return res.status(400).json({error:headerError});
-    const recipients=await db.select().from(contacts).where(and(eq(contacts.ownerUserId,userId),inArray(contacts.id,ids)));
+    const recipients=await db.select(sendingContactSelect).from(contacts).where(and(eq(contacts.ownerUserId,userId),inArray(contacts.id,ids)));
     if(recipients.length!==ids.length)return res.status(400).json({error:'A selected contact does not belong to your business.'});
     const requestId=String(req.body?.requestId||randomBytes(16).toString('hex'));
     if(!/^[A-Za-z0-9_-]{8,128}$/.test(requestId))return res.status(400).json({error:'Invalid send request ID.'});
     // Resolve the entire batch before sending any recipient.
-    const [business]=await db.select().from(users).where(eq(users.id,userId)).limit(1);
+    const [business]=await db.select(sendingBusinessSelect).from(users).where(eq(users.id,userId)).limit(1);
     const eligible=recipients.filter(c=>c.optIn).map(contact=>({contact,vars:resolveTemplateVariablesForContact(template.components as any[],vars,{...contact,name:contactName(contact.name)},new Date(),business)}));
     const creds=await resolveWhatsAppCredentials(userId);if(!creds.isFullyConfigured)return res.status(400).json({error:'Connect your WhatsApp Business account first.'});
     const results:any[]=recipients.filter(c=>!c.optIn).map(c=>({contactId:c.id,name:c.name,status:'SKIPPED',error:'No WhatsApp consent'}));
@@ -3493,11 +3501,11 @@ const sendNowHandler=async(req:AuthRequest,res:any)=>{
     const committedIds=results.map(row=>row.automationId).filter((id:any)=>Number.isInteger(id));
     const confirmed=committedIds.length?await db.select(automationSelect).from(automations)
       .innerJoin(contacts,eq(automations.contactId,contacts.id)).innerJoin(messageTemplates,eq(automations.templateId,messageTemplates.id))
-      .where(and(eq(automations.ownerUserId,userId),inArray(automations.id,committedIds))):[];
+      .where(and(eq(automations.ownerUserId,userId),inArray(automations.id,committedIds))).orderBy(desc(automations.id)).limit(req.body?.compactResults===true?50:2000):[];
     res.status(202).json({success:true,requestId,automations:confirmed,total:results.length,queued:results.filter(r=>r.status==='SCHEDULED').length,
       sent:results.filter(r=>['SENT','DELIVERED','READ'].includes(r.status)).length,failed:results.filter(r=>r.status==='FAILED').length,
       accepted:results.filter(r=>r.status==='ACCEPTED').length,processing:results.filter(r=>r.status==='PROCESSING').length,
-      skipped:results.filter(r=>r.status==='SKIPPED').length,results});
+      skipped:results.filter(r=>r.status==='SKIPPED').length,resultsTruncated:req.body?.compactResults===true,results:req.body?.compactResults===true?results.filter(r=>['FAILED','SKIPPED'].includes(r.status)).slice(0,50):results});
   }catch(err:any){sendRuleError(res,err,'Unable to send messages.');}
 };
 app.post('/api/whatsapp/send',requireAuth,requireActiveBusinessPackage,sendNowHandler);
@@ -3749,7 +3757,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-display-20261024',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-scale-20261116',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});

@@ -7,13 +7,14 @@ import { sameSendVariables } from './message-acceptance.ts';
  * A recipient/request unique key makes a timed-out HTTP response safe to replay. */
 export async function enqueueSendNowBatch(database: any, ownerUserId: number, requestId: string,
   template: any, recipients: Array<{contact: any; vars: any}>,
-  assertCapacity: (count: number, transaction: any) => Promise<unknown>) {
+  assertCapacity: (count: number, transaction: any) => Promise<unknown>,
+  schedule?: {at:Date; timezone:string}) {
   if (!recipients.length) return [];
   return database.transaction(async (tx: any) => {
     // Serialise this business's simultaneous bulk requests, including quota reservation.
     await tx.execute(sql`select pg_advisory_xact_lock(45871, ${ownerUserId})`);
     const key = (id: number) => `${ownerUserId}:${requestId}:${id}`;
-    const existing = await tx.select().from(automations).where(and(
+    const existing = await tx.select({id:automations.id,contactId:automations.contactId,templateId:automations.templateId,variables:automations.variables,status:automations.status,errorMessage:automations.errorMessage}).from(automations).where(and(
       eq(automations.ownerUserId, ownerUserId),
       inArray(automations.sendRequestId, recipients.map(row => key(row.contact.id)))));
     const saved = new Map<number, any>(existing.map((row: any) => [row.contactId, row]));
@@ -26,14 +27,18 @@ export async function enqueueSendNowBatch(database: any, ownerUserId: number, re
     const fresh = recipients.filter(row => !saved.has(row.contact.id));
     if (fresh.length) {
       await assertCapacity(fresh.length, tx);
-      const now = new Date();
-      const created = await tx.insert(automations).values(fresh.map(row => ({
+      const now = schedule?.at ?? new Date();
+      // Bounded statements, one transaction: parameter count and memory do not
+      // grow into one enormous INSERT, and failure rolls back the whole audience.
+      for (let offset=0;offset<fresh.length;offset+=100) {
+      const created = await tx.insert(automations).values(fresh.slice(offset,offset+100).map(row => ({
         ownerUserId, contactId: row.contact.id, templateId: template.id,
         variables: row.vars, templateSnapshot: previewSnapshot(template),
-        scheduledAt: now, timezone: 'Asia/Kolkata', status: 'SCHEDULED',
+        scheduledAt: now, timezone: schedule?.timezone ?? 'Asia/Kolkata', status: 'SCHEDULED',
         sendRequestId: key(row.contact.id),
-      }))).returning();
+      }))).returning({id:automations.id,contactId:automations.contactId,status:automations.status,errorMessage:automations.errorMessage});
       for (const row of created) saved.set(row.contactId, row);
+      }
     }
     return recipients.map(row => {
       const job = saved.get(row.contact.id);

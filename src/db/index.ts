@@ -370,6 +370,9 @@ export const initDatabaseSchema = async (): Promise<boolean> => {
           executed_at TIMESTAMP DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS contacts_owner_phone_idx ON contacts(owner_user_id, phone);
+        CREATE INDEX IF NOT EXISTS automations_owner_feed_idx ON automations(owner_user_id,id DESC);
+        CREATE INDEX IF NOT EXISTS automations_owner_claim_idx ON automations(owner_user_id,locked_at DESC NULLS LAST);
+        CREATE INDEX IF NOT EXISTS automations_owner_due_idx ON automations(owner_user_id,status,scheduled_at,id);
         CREATE INDEX IF NOT EXISTS automations_status_schedule_idx ON automations(status, scheduled_at);
         CREATE INDEX IF NOT EXISTS messages_owner_created_idx ON messages(owner_user_id, created_at);
         CREATE INDEX IF NOT EXISTS templates_owner_status_idx ON message_templates(owner_user_id, status);

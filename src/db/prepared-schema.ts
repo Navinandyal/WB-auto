@@ -1,5 +1,5 @@
 // Bump this version whenever schema or table-access protection changes.
-export const preparedSchemaVersion='greetsync-auth-data-20261023-v1';
+export const preparedSchemaVersion='greetsync-scale-20261116-v1';
 export async function hasPreparedSchema(client:{query:(...args:any[])=>Promise<any>},env=process.env):Promise<boolean>{
  if(env.NODE_ENV!=='production'||env.DATABASE_PROVIDER!=='supabase'||!env.DEPLOY_COMMIT||env.DEPLOY_COMMIT==='pending'||!env.DATABASE_TARGET_FINGERPRINT)return false;
  try{

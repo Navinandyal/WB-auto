@@ -1,3 +1,4 @@
+import {verifyMessageMedia} from './media-check.ts';
 import { metaErrorText } from './marketing-limits.ts';
 import { randomUUID } from 'node:crypto';
 import { templateHeaderError } from './template-media.ts';
@@ -471,15 +472,8 @@ export class WhatsAppService {
     if (['VIDEO','DOCUMENT'].includes(headerFormat)) {
       const id=String(variables.__header_media_id||'').trim();
       if(!id) return {success:false,error:'Upload the actual video or PDF file. A preview/download link is not a verified WhatsApp attachment.',errorCode:'MEDIA_UPLOAD_REQUIRED'};
-      try {
-        const url=new URL(`https://graph.facebook.com/${apiVersion}/${encodeURIComponent(id)}`);
-        url.searchParams.set('phone_number_id',phoneNumberId);
-        const check=await fetch(url,{headers:{Authorization:`Bearer ${accessToken}`},signal:AbortSignal.timeout(15000)});
-        const media=await check.json();
-        if(!check.ok||media.error||String(media.id||'')!==id) return {success:false,error:'The uploaded attachment is expired or unavailable for this WhatsApp number. Select and upload the file again.',errorCode:'MEDIA_UNAVAILABLE'};
-        const allowed=headerFormat==='DOCUMENT'?['application/pdf']:['video/mp4','video/3gpp'];
-        if(!allowed.includes(media.mime_type)) return {success:false,error:'The uploaded attachment does not match this template. Upload a compatible video or PDF.',errorCode:'MEDIA_TYPE_MISMATCH'};
-      } catch {return {success:false,error:'Unable to verify the attachment with WhatsApp. Try again before sending.',errorCode:'MEDIA_CHECK_FAILED'};}
+      const verification=await verifyMessageMedia({phoneNumberId,accessToken,apiVersion,mediaId:id,format:headerFormat});
+      if(!verification.success)return verification;
     }
     const headerTokens = tokensFor('HEADER');
     if (headerFormat==='TEXT' && headerTokens.length > 0 && templateName !== 'hello_world') {

@@ -1,10 +1,12 @@
+import {fairDueIds} from './queue-selection.ts';
+import {sendingContactSelect} from './traffic-projections.ts';
 import {compactComponents} from './automation-read.ts';
 import { sendRetryPlan } from './send-retry.ts';
 import { marketingRetryAfter, marketingLimitMessage } from './marketing-limits.ts';
 import { prepareDeliveryTracking } from './delivery-setup.ts';
 import { acceptanceVariables } from './message-acceptance.ts';
 import { semanticComponents, previewSnapshot } from './template-rules.ts';
-import { getTableColumns, and, eq, lte, gte, asc, isNull, or } from 'drizzle-orm';
+import { sql, inArray, getTableColumns, and, eq, lte, gte, asc, isNull, or } from 'drizzle-orm';
 import { db as defaultDb, isDatabaseConnected, pool } from '../db/index.ts';
 import {
   automations,
@@ -159,13 +161,13 @@ export class AutomationWorker {
     const dueJobs = await this.db
       .select({
         automation: automations,
-        contact: contacts,
+        contact: sendingContactSelect,
         template: {...getTableColumns(messageTemplates),components:compactComponents(messageTemplates.components)},
       })
       .from(automations)
       .innerJoin(contacts, eq(automations.contactId, contacts.id))
       .innerJoin(messageTemplates, eq(automations.templateId, messageTemplates.id))
-      .where(whereClause)
+      .where(forceId?whereClause:and(whereClause,inArray(automations.id,sql`(${fairDueIds(whereClause)})`)))
       .orderBy(asc(automations.scheduledAt), asc(automations.id))
       .limit(25);
 
@@ -459,7 +461,7 @@ export class AutomationWorker {
       ? sendRetryPlan(sendResult.errorCode, automation.variables) : null;
     if (retry) {
       await this.db.update(automations).set({status:'SCHEDULED',scheduledAt:retry.scheduledAt,
-        variables:retry.variables,lockedAt:null,errorMessage:'WhatsApp rate limit. This queued message will retry automatically.',updatedAt:new Date()})
+        variables:retry.variables,lockedAt:null,errorMessage:sendResult.errorCode==='MEDIA_CHECK_TEMPORARY'?'Attachment verification temporarily unavailable. This queued message will retry automatically.':'WhatsApp rate limit. This queued message will retry automatically.',updatedAt:new Date()})
         .where(and(eq(automations.id,automation.id),eq(automations.status,'PROCESSING')));
       return {status:'SCHEDULED'};
     }

@@ -178,8 +178,8 @@ export async function assertContactCapacity(userId: number, requestedNewContacts
   return summary;
 }
 
-export async function assertAutomationCapacity(userId: number, requested = 1) {
-  const summary = await requirePackageForAction(userId);
+export async function assertAutomationCapacity(userId: number, requested = 1, database: SubscriptionDatabase = db) {
+  const summary = await requirePackageForAction(userId,database);
   if (summary.automationLimit > 0 && summary.automationsUsed + requested > summary.automationLimit) {
     const over = summary.automationsUsed + requested - summary.automationLimit;
     const err: any = new Error(`Automation limit exceeded by ${over}. Your package allows ${summary.automationLimit} active automations.`);

@@ -1,7 +1,8 @@
 /** Retry only definite rate-limit rejections, never an accepted or uncertain send.
+ * A temporary media GET failure is also safe: no send was attempted.
  * 131049 is a recipient marketing policy decision and must not enter this path. */
 export function sendRetryPlan(errorCode: unknown, variables: any, now = new Date()) {
-  if (!['429', '130429', '131056'].includes(String(errorCode))) return null;
+  if (!['429', '130429', '131056', 'MEDIA_CHECK_TEMPORARY'].includes(String(errorCode))) return null;
   const attempts = Number(variables?.__send_retry_count || 0);
   if (!Number.isInteger(attempts) || attempts < 0 || attempts >= 3) return null;
   const delaySeconds = 30 * 2 ** attempts;
