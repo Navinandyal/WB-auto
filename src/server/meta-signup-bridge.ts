@@ -89,7 +89,7 @@ export function renderMetaSignupBridge(config:{sessionId:string;appId:string;con
     try{window.FB.login(function(response){
       if(response&&response.authResponse&&response.authResponse.code){
         authCode=response.authResponse.code;if(sessionData)complete();else{show('Confirming the WhatsApp account you authorized…');clearCodeTimer();codeTimer=setTimeout(complete,8000);}
-      }else{btn.disabled=false;show('Facebook sign-in was cancelled or no access was granted. You can try again.','status error');}
+      }else{btn.disabled=false;show('Facebook returned no authorization. If it showed JSSDK unknown host domain, ask the GreetSync administrator to enable Login with the JavaScript SDK and add '+location.origin+' to the Meta app’s Allowed Domains for the JavaScript SDK. Otherwise, retry after granting access.','status error');}
     },{config_id:CONFIG_ID,response_type:'code',override_default_response_type:true,extras:{setup:{},featureType:'whatsapp_business_app_onboarding',sessionInfoVersion:'3'}});}
     catch(_){btn.disabled=false;show('Facebook sign-in could not open. Allow the login popup and try again.','status error');}
   });

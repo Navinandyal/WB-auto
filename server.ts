@@ -1,3 +1,4 @@
+import { createApiCors } from './src/server/api-cors.ts';
 import { checkAppWebhook } from './src/server/app-webhook-check.ts';
 import { saveBusinessNumber } from './src/server/business-number-binding.ts';
 import { requestCoexistenceSync } from './src/server/coexistence-sync.ts';
@@ -92,6 +93,8 @@ if (!Number.isFinite(PORT) || PORT <= 0) {
   throw new Error('Invalid PORT environment variable.');
 }
 
+// Answer browser preflights before database checks or authentication.
+app.use('/api',createApiCors());
 app.use(express.json({ limit: '30mb', verify: (req:any,_res,buffer) => { req.rawBody=Buffer.from(buffer); } }));
 
 // Database outages are availability failures, never invalid-password failures.
@@ -3743,7 +3746,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-coexistence-20261124',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-login-20261124',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});
