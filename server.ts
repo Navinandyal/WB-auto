@@ -1,3 +1,7 @@
+import { checkAppWebhook } from './src/server/app-webhook-check.ts';
+import { saveBusinessNumber } from './src/server/business-number-binding.ts';
+import { requestCoexistenceSync } from './src/server/coexistence-sync.ts';
+import { effectiveWebhookWaba } from './src/server/coexistence-policy.ts';
 import {createTrafficMetrics} from './src/server/traffic-metrics.ts';
 import {sendingContactSelect,sendingBusinessSelect,accountStatusSelect,approvedTemplateIdentity} from './src/server/traffic-projections.ts';
 import {automationListSelect,validateAudience,readAutomationPage,templateListSelect,compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
@@ -1205,6 +1209,8 @@ app.post('/api/admin/businesses/:id/whatsapp/test', requireAuth, requireAdmin, a
     if (!business || business.role === 'admin') return res.status(404).json({ error: 'Business not found.' });
     const creds = await resolveWhatsAppCredentials(businessId);
     if (!creds.isFullyConfigured) return res.status(400).json({ error: 'This business has not saved complete WhatsApp credentials.' });
+    const [coexAccount]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,businessId)).limit(1);
+    if(coexAccount?.onboardingMode==='COEXISTENCE' && coexAccount.connectionStatus!=='CONNECTED')return res.status(409).json({error:'Reconnect with Meta to restore WhatsApp Business app Coexistence.'});
     const result = await WhatsAppService.testConnection(creds.phoneNumberId, creds.accessToken, creds.apiVersion);
     const [wa] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, businessId)).limit(1);
     if (wa) await db.update(whatsappAccounts).set({
@@ -1212,7 +1218,7 @@ app.post('/api/admin/businesses/:id/whatsapp/test', requireAuth, requireAdmin, a
       displayPhoneNumber: result.phoneNumber || wa.displayPhoneNumber, verifiedName: result.verifiedName || wa.verifiedName,
       qualityRating: result.qualityRating || wa.qualityRating, lastConnectionError: result.success ? null : (result.error || 'Connection test failed.'),
       lastTestedAt: new Date(), updatedAt: new Date(),
-    }).where(eq(whatsappAccounts.id, wa.id));
+    }).where(and(eq(whatsappAccounts.id, wa.id),eq(whatsappAccounts.connectionStatus,wa.connectionStatus)));
     await db.insert(auditLogs).values({ action: 'ADMIN_WHATSAPP_TEST', actor: req.user?.phone || 'admin', details: { userId: businessId, success: result.success } });
     if (!result.success) return res.status(400).json({ success: false, error: result.error || 'Connection test failed.' });
     res.json({ success: true, phoneNumber: result.phoneNumber, verifiedName: result.verifiedName, qualityRating: result.qualityRating });
@@ -1474,19 +1480,7 @@ app.post('/api/whatsapp/account', requireAuth, async (req: AuthRequest, res) => 
     const webhookVerifyToken = verifyInput && !isMaskedSecret(verifyInput) ? verifyInput : current.webhookVerifyToken;
 
     const secretValues = encryptedCredentialValues({ accessToken, metaAppSecret, webhookVerifyToken });
-    let row: any;
-    if (existing) {
-      [row] = await db.update(whatsappAccounts).set({
-        metaAppId, businessAccountId, phoneNumberId, businessPhone, metaBusinessId, apiVersion,
-        ...secretValues, status: 'DISCONNECTED', connectionStatus: 'SAVED', lastConnectionError: null, updatedAt: new Date(),
-      }).where(eq(whatsappAccounts.id, existing.id)).returning();
-    } else {
-      [row] = await db.insert(whatsappAccounts).values({
-        ownerUserId, metaAppId, businessAccountId, phoneNumberId, businessPhone, metaBusinessId, apiVersion,
-        metaAppSecret: secretValues.metaAppSecret || '', accessToken: secretValues.accessToken || '',
-        webhookVerifyToken: secretValues.webhookVerifyToken || '', status: 'DISCONNECTED', connectionStatus: 'SAVED',
-      }).returning();
-    }
+    const row = await saveBusinessNumber(ownerUserId, {metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,...secretValues,status:'DISCONNECTED',connectionStatus:'SAVED',lastConnectionError:null,updatedAt:new Date()}, true);
 
     await db.insert(auditLogs).values({
       action: 'WHATSAPP_CONFIG_UPDATED', actor: req.user?.phone || String(ownerUserId),
@@ -1510,6 +1504,8 @@ app.post('/api/whatsapp/test', requireAuth, async (req: AuthRequest, res) => {
     const apiVersion = String(req.body?.apiVersion || current.apiVersion || 'v21.0');
     if (!phoneNumberId || !accessToken) return res.status(400).json({ success: false, error: 'Enter your Phone Number ID and Access Token first.' });
 
+    const [saved]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,ownerUserId)).limit(1);
+    if(saved?.onboardingMode==='COEXISTENCE')return res.status(409).json({error:'Use the Coexistence connection screen to verify or reconnect this business.'});
     const testRes = await WhatsAppService.testConnection(phoneNumberId, accessToken, apiVersion);
     const [existing] = await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId, ownerUserId)).limit(1);
     if (existing) {
@@ -1804,25 +1800,15 @@ async function discoverMetaWhatsappAssets(cfg: any, accessToken: string, hints: 
 }
 
 async function initiateCoexistenceSync(userId:number,phoneId:string,accessToken:string,apiVersion:string) {
-  const client=await pool.connect();
-  try {
-    await client.query('SELECT pg_advisory_lock($1,$2)',[7301,userId]);
-    const rows=await client.query('SELECT coexistence_sync_requests FROM whatsapp_accounts WHERE owner_user_id=$1',[userId]);
-    const requests=rows.rows[0]?.coexistence_sync_requests||{};
-    for(const type of ['smb_app_state_sync','history']) {
-      if(requests[type])continue;
-      const result:any=await metaGraphJson(`https://graph.facebook.com/${apiVersion}/${phoneId}/smb_app_data`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',sync_type:type})});
-      requests[type]=String(result.request_id||'accepted');
-      await client.query("UPDATE whatsapp_accounts SET coexistence_sync_requests=$2,coexistence_sync_status='REQUESTED',updated_at=NOW() WHERE owner_user_id=$1",[userId,JSON.stringify(requests)]);
-    }
-  }catch(e:any){await client.query("UPDATE whatsapp_accounts SET coexistence_sync_status='SYNC_ERROR',last_connection_error=$2 WHERE owner_user_id=$1",[userId,String(e.message)]);throw new Error('Coexistence connected, but data synchronization needs attention. Retry sync from GreetSync within 24 hours. '+e.message);}
-  finally{await client.query('SELECT pg_advisory_unlock($1,$2)',[7301,userId]);client.release();}
+  await requestCoexistenceSync(pool as any,userId,phoneId,async type =>
+    metaGraphJson(`https://graph.facebook.com/${encodeURIComponent(apiVersion)}/${encodeURIComponent(phoneId)}/smb_app_data`,{method:'POST',headers:{Authorization:`Bearer ${accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',sync_type:type})}));
 }
+
 app.post('/api/whatsapp/coexistence/sync',requireAuth,async(req:AuthRequest,res)=>{
   try{const [account]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,req.user!.id)).limit(1);
     if(account?.onboardingMode!=='COEXISTENCE')return res.status(400).json({error:'This account is not connected through Coexistence.'});
     const creds=await resolveWhatsAppCredentials(req.user!.id);await initiateCoexistenceSync(req.user!.id,account.phoneNumberId,creds.accessToken,account.apiVersion);
-    await db.update(whatsappAccounts).set({connectionStatus:'CONNECTED',status:'CONNECTED',lastConnectionError:null}).where(eq(whatsappAccounts.id,account.id));res.json({success:true});
+    res.json({success:true});
   }catch(e:any){sendRuleError(res,e,'Coexistence sync failed.');}
 });
 
@@ -1868,19 +1854,16 @@ async function finishMetaEmbeddedSignup(user: any, code: string, cfg: any, optio
     lastTestedAt: new Date(),
     updatedAt: new Date(),
   };
-  if (existing) {
-    await db.update(whatsappAccounts).set(values).where(eq(whatsappAccounts.id, existing.id));
-  } else {
-    await db.insert(whatsappAccounts).values({ ownerUserId: user.id, ...values });
-  }
-
-  if(isCoexistence) await pool.query("UPDATE whatsapp_accounts SET coexistence_sync_requests='{}'::jsonb WHERE owner_user_id=$1",[user.id]);
+  const savedAccount = await saveBusinessNumber(user.id, values);
   let subscribed = false;
   try {
-    await metaGraphJson(
+    const subscription = await metaGraphJson(
       `https://graph.facebook.com/${encodeURIComponent(cfg.apiVersion)}/${encodeURIComponent(assets.wabaId)}/subscribed_apps`,
-      { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type':'application/json' }, body:JSON.stringify(cfg.publicBaseUrl?{override_callback_uri:cfg.publicBaseUrl+'/webhooks/whatsapp',verify_token:decryptSecret(enc.webhookVerifyToken)||cfg.webhookVerifyToken}:{}) },
+      { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type':'application/json' }, body:JSON.stringify(cfg.publicBaseUrl?{override_callback_uri:cfg.publicBaseUrl+'/webhooks/whatsapp',verify_token:decryptSecret(savedAccount.webhookVerifyToken)||cfg.webhookVerifyToken}:{}) },
     );
+    if (subscription.success !== true) throw new Error('Meta did not confirm the WABA webhook subscription.');
+    const appWebhook=await checkAppWebhook({metaAppId:cfg.appId,metaAppSecret:cfg.appSecret,apiVersion:cfg.apiVersion},isCoexistence);
+    if(appWebhook.state!=='READY')throw new Error(appWebhook.warning || 'Verify the Meta app webhook fields before connecting.');
     subscribed = true;
   } catch (e: any) {
     await db.update(whatsappAccounts).set({connectionStatus:'CONNECTION_ERROR',lastConnectionError:'Webhook subscription failed. Reconnect before automation.'}).where(eq(whatsappAccounts.ownerUserId,user.id));
@@ -1889,9 +1872,11 @@ async function finishMetaEmbeddedSignup(user: any, code: string, cfg: any, optio
   let syncWarning:string|null=null;
   if(isCoexistence) {
     try { await initiateCoexistenceSync(user.id,assets.phoneNumberId,accessToken,cfg.apiVersion); }
-    catch { syncWarning='WhatsApp is connected, but shared contacts/history synchronization needs attention. Open WhatsApp Business in GreetSync to retry the permitted sync.'; }
+    catch(error:any) { syncWarning=String(error?.message||'WhatsApp is connected, but contact/history sharing is unconfirmed.'); }
   }
-  await db.update(whatsappAccounts).set({connectionStatus:'CONNECTED',status:'CONNECTED',lastConnectionError:syncWarning,updatedAt:new Date()}).where(eq(whatsappAccounts.ownerUserId,user.id));
+  await db.update(whatsappAccounts).set({connectionStatus:'CONNECTED',status:'CONNECTED',lastConnectionError:syncWarning,updatedAt:new Date()}).where(and(eq(whatsappAccounts.ownerUserId,user.id),eq(whatsappAccounts.connectionStatus,'CONNECTING')));
+  const [connectedAccount]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,user.id)).limit(1);
+  if(connectedAccount?.connectionStatus!=='CONNECTED')throw new Error('WhatsApp disconnected during signup. Reconnect before scheduling messages.');
 
   // Pull the business's real templates immediately so the account is ready for
   // automation as soon as onboarding finishes.
@@ -1928,7 +1913,7 @@ async function finishMetaEmbeddedSignup(user: any, code: string, cfg: any, optio
     subscribed,
     accessTokenStored: true,
     onboardingMode: isCoexistence ? 'COEXISTENCE' : 'CLOUD_API',
-    coexistenceSyncStatus: isCoexistence ? (syncWarning ? 'SYNC_ERROR' : 'REQUESTED') : 'NOT_REQUIRED',
+    coexistenceSyncStatus: connectedAccount.coexistenceSyncStatus,
     warning:syncWarning, wabaName:assets.wabaName, metaBusinessName:assets.businessName, metaBusinessId:assets.metaBusinessId, businessProfile:assets.businessProfile,
   };
 }
@@ -2108,7 +2093,7 @@ app.get('/meta/embedded-signup/callback', async (req,res)=>{
     const user:any=userResult[0];
     if(!user || user.role==='admin') throw new Error('Business account not found for this signup session.');
     const cfg=await metaPlatformConfig();
-    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(session.redirect_uri||'')});
+    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(session.redirect_uri||''),requireCoexistence:true});
     await pool.query(`UPDATE meta_embedded_signup_sessions SET status='CONNECTED',waba_id=$2,phone_number_id=$3,display_phone_number=$4,verified_name=$5,completed_at=NOW(),updated_at=NOW() WHERE session_id=$1`,[session.session_id,result.wabaId,result.phoneNumberId,result.displayPhoneNumber||null,result.verifiedName||null]);
     const phone=String(result.displayPhoneNumber||''); const name=String(result.verifiedName||'WhatsApp Business');
     return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial;background:#f4fbf7;margin:0;padding:28px;color:#10231a}.card{max-width:520px;margin:40px auto;background:#fff;border-radius:22px;padding:26px;border:1px solid #dfece5;text-align:center}.ok{font-size:52px;color:#079455}.btn{display:block;margin-top:22px;padding:15px;border-radius:14px;background:#079455;color:#fff;text-decoration:none;font-weight:700}.muted{color:#667085}</style></head><body><div class="card"><div class="ok">✓</div><h2>WhatsApp Business Connected</h2><p><b>${name.replace(/[<>&]/g,'')}</b></p><p>${phone.replace(/[<>&]/g,'')}</p><p>GreetSync securely stored this business's WABA ID, Phone Number ID and encrypted access token. Approved templates are being synchronized and automations can now use this account.</p><p class="muted">You can close this browser if GreetSync does not open automatically.</p><a class="btn" href="greetsync://meta-connected">Return to GreetSync</a></div><script>setTimeout(()=>{location.href='greetsync://meta-connected'},900)</script></body></html>`);
@@ -2126,7 +2111,7 @@ app.post('/api/whatsapp/embedded-signup/complete', async (req,res)=>{
     if(!user || user.role==='admin') return res.status(401).json({error:'Embedded Signup session expired.'});
     const cfg=await metaPlatformConfig(); const code=String(req.body?.code||'').trim();
     if(!code) return res.status(400).json({error:'Meta authorization code is missing.'});
-    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(req.body?.redirectUri||'')});
+    const result=await finishMetaEmbeddedSignup(user,code,cfg,{redirectUri:String(req.body?.redirectUri||''),requireCoexistence:true});
     res.json(result);
   } catch(e:any){res.status(500).json({error:e.message||'Failed to complete Meta Embedded Signup.'});}
 });
@@ -2157,8 +2142,7 @@ app.put('/api/whatsapp/connection', requireAuth, async (req: AuthRequest, res) =
     const tokenIn=String(req.body?.accessToken??'').trim(), secretIn=String(req.body?.appSecret??req.body?.metaAppSecret??'').trim(), verifyIn=String(req.body?.webhookVerifyToken??'').trim();
     const accessToken=tokenIn&&!isMaskedSecret(tokenIn)?tokenIn:current.accessToken, metaAppSecret=secretIn&&!isMaskedSecret(secretIn)?secretIn:current.metaAppSecret, webhookVerifyToken=verifyIn&&!isMaskedSecret(verifyIn)?verifyIn:current.webhookVerifyToken;
     const enc=encryptedCredentialValues({accessToken,metaAppSecret,webhookVerifyToken}); let row:any;
-    if(existing){[row]=await db.update(whatsappAccounts).set({metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,...enc,connectionStatus:'SAVED',status:'DISCONNECTED',lastConnectionError:null,updatedAt:new Date()}).where(eq(whatsappAccounts.id,existing.id)).returning();}
-    else {[row]=await db.insert(whatsappAccounts).values({ownerUserId,metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,metaAppSecret:enc.metaAppSecret||'',accessToken:enc.accessToken||'',webhookVerifyToken:enc.webhookVerifyToken||'',connectionStatus:'SAVED',status:'DISCONNECTED'}).returning();}
+    row=await saveBusinessNumber(ownerUserId,{metaAppId,businessAccountId,phoneNumberId,businessPhone,metaBusinessId,apiVersion,...enc,connectionStatus:'SAVED',status:'DISCONNECTED',lastConnectionError:null,updatedAt:new Date()},true);
     res.json({success:true,credentialsStatus:'SAVED',connectionStatus:'SAVED',message:'WhatsApp Details Saved'});
   } catch(e:any){res.status(500).json({error:e.message||'Failed to save WhatsApp connection.'});}
 });
@@ -2167,6 +2151,8 @@ app.post('/api/whatsapp/connection/test', requireAuth, async (req: AuthRequest, 
     const ownerUserId=req.user!.id; const creds=await resolveWhatsAppCredentials(ownerUserId); const [acc]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,ownerUserId)).limit(1);
     if(!acc) return res.status(400).json({error:'Save WhatsApp details first.'});
     if(!creds.phoneNumberId||!creds.accessToken){await db.update(whatsappAccounts).set({connectionStatus:'CONNECTION_ERROR',lastConnectionError:'Phone Number ID and Access Token are required.',lastTestedAt:new Date()}).where(eq(whatsappAccounts.id,acc.id));return res.status(400).json({error:'Phone Number ID and Access Token are required. Your saved details were not deleted.'});}
+    const [coexAccount]=await db.select().from(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,req.user!.id)).limit(1);
+    if(coexAccount?.onboardingMode==='COEXISTENCE' && coexAccount.connectionStatus!=='CONNECTED')return res.status(409).json({error:'Reconnect with Meta to restore WhatsApp Business app Coexistence.'});
     const result=await WhatsAppService.testConnection(creds.phoneNumberId,creds.accessToken,creds.apiVersion);
     let webhookSetup:Awaited<ReturnType<typeof ensureDeliverySubscription>>|null=null;
     if(result.success){
@@ -2179,12 +2165,12 @@ app.post('/api/whatsapp/connection/test', requireAuth, async (req: AuthRequest, 
         if(webhookSetup.appWebhook.state==='ACTION_REQUIRED')throw new Error(webhookSetup.appWebhook.warning);
       }catch(error:any){result.success=false;result.error=error.message||'WhatsApp delivery subscription failed.';}
     }
-    await db.update(whatsappAccounts).set({connectionStatus:result.success?'CONNECTED':'CONNECTION_ERROR',status:result.success?'CONNECTED':'ERROR',lastConnectionError:result.success?null:(result.error||'Connection test failed.'),displayPhoneNumber:result.phoneNumber||acc.displayPhoneNumber,verifiedName:result.verifiedName||acc.verifiedName,qualityRating:result.qualityRating||acc.qualityRating,lastTestedAt:new Date(),updatedAt:new Date()}).where(eq(whatsappAccounts.id,acc.id));
+    await db.update(whatsappAccounts).set({connectionStatus:result.success?'CONNECTED':'CONNECTION_ERROR',status:result.success?'CONNECTED':'ERROR',lastConnectionError:result.success?null:(result.error||'Connection test failed.'),displayPhoneNumber:result.phoneNumber||acc.displayPhoneNumber,verifiedName:result.verifiedName||acc.verifiedName,qualityRating:result.qualityRating||acc.qualityRating,lastTestedAt:new Date(),updatedAt:new Date()}).where(and(eq(whatsappAccounts.id,acc.id),eq(whatsappAccounts.connectionStatus,acc.connectionStatus)));
     if(!result.success) return res.status(400).json({success:false,connectionStatus:'CONNECTION_ERROR',error:result.error||'Connection test failed. Saved credentials were kept.'});
     res.json({success:true,connectionStatus:'CONNECTED',displayPhoneNumber:result.phoneNumber,verifiedName:result.verifiedName,qualityRating:result.qualityRating,deliveryUpdatesSubscribed:true,webhookSetup,message:webhookSetup?.appWebhook.state==='READY'?'WhatsApp verified. Callback URL and the app messages field are confirmed.':'WABA callback confirmed. '+(webhookSetup?.appWebhook.warning||'Check the app messages field in Meta App Dashboard.')});
   } catch(e:any){res.status(500).json({error:e.message||'Connection test failed. Saved credentials were kept.'});}
 });
-app.delete('/api/whatsapp/connection', requireAuth, async (req:AuthRequest,res)=>{try{await db.delete(whatsappAccounts).where(eq(whatsappAccounts.ownerUserId,req.user!.id));res.json({success:true});}catch(e:any){res.status(500).json({error:e.message||'Failed to disconnect WhatsApp.'});}});
+app.delete('/api/whatsapp/connection', requireAuth, async (req:AuthRequest,res)=>{try{await db.update(whatsappAccounts).set({connectionStatus:'DISCONNECTED',status:'DISCONNECTED',updatedAt:new Date()}).where(eq(whatsappAccounts.ownerUserId,req.user!.id));res.json({success:true,message:'Automation disconnected. To remove Meta pairing, use WhatsApp Business Settings > Account > Business Platform.'});}catch(e:any){res.status(500).json({error:e.message||'Failed to disconnect WhatsApp.'});}});
 
 app.get('/api/whatsapp/connection/readiness', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -3706,7 +3692,7 @@ const whatsappWebhookHandler=async(req:any,res:any)=>{
     const signature=String(req.headers['x-hub-signature-256']||'');
     const raw=req.rawBody||Buffer.alloc(0);
     if(!matchesWebhookSignature(raw,signature,cfg.appSecret)){
-      const ids=Array.isArray(req.body?.entry)?req.body.entry.map((entry:any)=>String(entry.id||'')):[];
+      const ids=Array.isArray(req.body?.entry)?req.body.entry.flatMap((entry:any)=>(entry.changes||[]).map((change:any)=>effectiveWebhookWaba(String(entry.id||''),change))):[];
       const result=await pool.query('SELECT business_account_id,phone_number_id,meta_app_secret FROM whatsapp_accounts WHERE business_account_id=ANY($1::text[])',[ids]);
       const accounts=result.rows.map((a:any)=>({...a,secret:String(decryptSecret(a.meta_app_secret)||'').trim()}));
       if(!authorizeAccountWebhook(raw,signature,req.body,accounts))return res.status(401).send('Invalid signature or account scope.');
@@ -3757,7 +3743,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-scale-20261116',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-coexistence-20261124',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});

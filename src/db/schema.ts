@@ -65,6 +65,7 @@ export const whatsappAccounts = pgTable('whatsapp_accounts', {
   verifiedName: text('verified_name'),
   qualityRating: text('quality_rating'),
   onboardingMode: text('onboarding_mode').default('CLOUD_API').notNull(),
+  coexistenceSyncRequests: jsonb('coexistence_sync_requests').default({}).notNull(),
   coexistenceSyncStatus: text('coexistence_sync_status').default('NOT_STARTED').notNull(),
   connectionStatus: text('connection_status').default('SAVED').notNull(), // SAVED, CONNECTED, CONNECTION_ERROR
   lastConnectionError: text('last_connection_error'),

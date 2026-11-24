@@ -1,6 +1,7 @@
+import { effectiveWebhookWaba } from './coexistence-policy.ts';
 import { contactName } from './contact-name.ts';
 import { metaErrorText } from './marketing-limits.ts';
-import { pool } from '../db/index.ts';
+import { pool as defaultPool } from '../db/index.ts';
 import { createNotification } from './notifications.ts';
 
 export function isCoexistencePhone(phone:any):boolean {return phone?.is_on_biz_app===true && phone?.platform_type==='CLOUD_API';}
@@ -11,11 +12,14 @@ export function webhookStatus(current:string,next:string):string {
   return (rank[next]||0)>(rank[current]||0)?next:current;
 }
 function digits(phone:any){return String(phone||'').replace(/\D/g,'');}
-export async function digestWhatsAppChange(wabaId:string,change:any):Promise<void> {
+export async function digestWhatsAppChange(wabaId:string,change:any,pool:any=defaultPool,notify=createNotification):Promise<void> {
   const value=change?.value||{};
+  wabaId=effectiveWebhookWaba(wabaId,change);
   const phoneId=String(value.metadata?.phone_number_id||'');
+  if(['messages','smb_message_echoes','history','smb_app_state_sync'].includes(change.field) && !phoneId)return;
   const accounts=await pool.query('SELECT owner_user_id,phone_number_id,display_phone_number,onboarding_mode FROM whatsapp_accounts WHERE business_account_id=$1 AND ($2=\'\' OR phone_number_id=$2)',[wabaId,phoneId]);
   if(!accounts.rows.length)return;
+  if(phoneId && accounts.rows.length!==1)throw new Error('WhatsApp number ownership conflict. Resolve the business connection before processing.');
   if(['message_template_status_update','template_category_update','message_template_category_update'].includes(change.field)) {
     const id=String(value.message_template_id||'');
     const status=String(value.event||'').toUpperCase(), category=String(value.new_category||value.category||'');
@@ -26,9 +30,9 @@ export async function digestWhatsAppChange(wabaId:string,change:any):Promise<voi
   }
   for(const account of accounts.rows){
     const owner=Number(account.owner_user_id);
-    if(change.field==='account_update' && ['ACCOUNT_OFFBOARDED','ACCOUNT_DISCONNECTED'].includes(String(value.event))){
+    if(change.field==='account_update' && ['ACCOUNT_OFFBOARDED','ACCOUNT_DISCONNECTED','PARTNER_REMOVED'].includes(String(value.event))){
       await pool.query('UPDATE whatsapp_accounts SET connection_status=\'DISCONNECTED\',status=\'DISCONNECTED\',updated_at=NOW() WHERE owner_user_id=$1',[owner]);
-      await createNotification({userId:owner,type:'ACCOUNT',title:'WhatsApp disconnected',message:'Reconnect your WhatsApp Business app from GreetSync to resume automation.'});return;
+      await notify({userId:owner,type:'ACCOUNT',title:'WhatsApp disconnected',message:'Reconnect your WhatsApp Business app from GreetSync to resume automation.'});continue;
     }
     // Contacts received through Coexistence do not imply marketing consent.
     for(const state of Array.isArray(value.state_sync)?value.state_sync:[]){
@@ -61,7 +65,7 @@ export async function digestWhatsAppChange(wabaId:string,change:any):Promise<voi
     for(const m of Array.isArray(value.message_echoes)?value.message_echoes:[])await saveMessage(m,undefined,true);
     for(const chunk of Array.isArray(value.history)?value.history:[]){
       for(const thread of Array.isArray(chunk.threads)?chunk.threads:[])for(const m of Array.isArray(thread.messages)?thread.messages:[])await saveMessage(m,String(thread.id));
-      if(chunk.metadata?.progress===100){const updated=await pool.query(`UPDATE whatsapp_accounts SET coexistence_sync_status='COMPLETE',updated_at=NOW() WHERE owner_user_id=$1 AND coexistence_sync_status IS DISTINCT FROM 'COMPLETE' RETURNING id`,[owner]);if(updated.rowCount)await createNotification({userId:owner,type:'ACCOUNT',title:'WhatsApp history synchronized',message:'Your shared WhatsApp Business app history is synchronized. You can continue using the Business app and GreetSync together.'});}
+      if(chunk.metadata?.progress===100){const updated=await pool.query(`UPDATE whatsapp_accounts SET coexistence_sync_status='COMPLETE',updated_at=NOW() WHERE owner_user_id=$1 AND coexistence_sync_status IS DISTINCT FROM 'COMPLETE' RETURNING id`,[owner]);if(updated.rowCount)await notify({userId:owner,type:'ACCOUNT',title:'WhatsApp history synchronized',message:'Your shared WhatsApp Business app history is synchronized. You can continue using the Business app and GreetSync together.'});}
       if(chunk.errors?.some((e:any)=>Number(e.code)===2593109))await pool.query("UPDATE whatsapp_accounts SET coexistence_sync_status='HISTORY_NOT_SHARED' WHERE owner_user_id=$1",[owner]);
     }
     for(const status of Array.isArray(value.statuses)?value.statuses:[]){
@@ -103,7 +107,7 @@ export async function digestWhatsAppChange(wabaId:string,change:any):Promise<voi
       if(row.automation_id)await pool.query(`UPDATE automations SET status=$1,updated_at=NOW(),
         variables=CASE WHEN $1 IN ('SENT','DELIVERED','READ') THEN (COALESCE(variables,'{}'::jsonb)-'__delivery_note'-'__delivery_tracking_warning')||jsonb_build_object('__meta_message_status',lower($1::text)) ELSE variables END,
         error_message=CASE WHEN $1 IN ('SENT','DELIVERED','READ') THEN NULL ELSE COALESCE($2,error_message) END WHERE id=$3`,[normalized,errorText,row.automation_id]);
-      if(normalized==='FAILED' && row.status!=='FAILED') await createNotification({userId:owner,type:'MESSAGE',title:'WhatsApp message failed',message:errorText!,entityType:'AUTOMATION',entityId:row.automation_id||null});
+      if(normalized==='FAILED' && row.status!=='FAILED') await notify({userId:owner,type:'MESSAGE',title:'WhatsApp message failed',message:errorText!,entityType:'AUTOMATION',entityId:row.automation_id||null});
     }
   }
 }

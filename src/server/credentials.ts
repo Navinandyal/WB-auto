@@ -1,3 +1,4 @@
+import { automationConnectionReady } from './coexistence-policy.ts';
 import { eq } from 'drizzle-orm';
 import { db, isDatabaseConnected } from '../db/index.ts';
 import { whatsappAccounts } from '../db/schema.ts';
@@ -11,7 +12,7 @@ export interface ResolvedWhatsAppCredentials {
   metaAppSecret: string;
   webhookVerifyToken: string;
   apiVersion: string;
-  status: 'SAVED' | 'CONNECTED' | 'CONNECTION_ERROR' | 'NOT_CONNECTED';
+  status: 'SAVED' | 'CONNECTED' | 'CONNECTION_ERROR' | 'NOT_CONNECTED' | 'DISCONNECTED' | 'CONNECTING';
   hasToken: boolean;
   hasPhoneId: boolean;
   isFullyConfigured: boolean;
@@ -36,7 +37,7 @@ export async function resolveWhatsAppCredentials(ownerUserId: number): Promise<R
   const apiVersion = acc?.apiVersion || 'v21.0';
   const hasToken = Boolean(accessToken && accessToken.length > 5);
   const hasPhoneId = Boolean(phoneNumberId && phoneNumberId.length > 3);
-  const isFullyConfigured = hasToken && hasPhoneId;
+  const isFullyConfigured = hasToken && hasPhoneId && automationConnectionReady(acc);
 
   return {
     phoneNumberId,

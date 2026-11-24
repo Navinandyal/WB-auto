@@ -1,3 +1,4 @@
+import { effectiveWebhookWaba } from './coexistence-policy.ts';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export function matchesWebhookSignature(raw:Buffer, signature:string, secret:string):boolean {
@@ -14,9 +15,9 @@ export function authorizeAccountWebhook(raw:Buffer,signature:string,payload:any,
   return signed.length>0 && Array.isArray(entries) && entries.length>0 && entries.every((entry:any)=>
     Array.isArray(entry.changes) && entry.changes.length>0 && entry.changes.every((change:any)=>{
       const phone=String(change.value?.metadata?.phone_number_id||'');
-      const scoped=signed.filter(a=>a.business_account_id===String(entry.id)&&(!phone||a.phone_number_id===phone));
+      const scoped=signed.filter(a=>a.business_account_id===effectiveWebhookWaba(String(entry.id),change)&&(!phone||a.phone_number_id===phone));
       if(!scoped.length)return false;
       // Every affected account must be authorized, even when owners share a phone.
-      return accounts.filter(a=>a.business_account_id===String(entry.id)&&(!phone||a.phone_number_id===phone)).every(a=>scoped.includes(a));
+      return accounts.filter(a=>a.business_account_id===effectiveWebhookWaba(String(entry.id),change)&&(!phone||a.phone_number_id===phone)).every(a=>scoped.includes(a));
     }));
 }

@@ -6,7 +6,7 @@ export type AppWebhookCheck = {
 };
 
 /** Read-only. Never rewrites a shared Meta app's webhook settings. */
-export async function checkAppWebhook(creds:{metaAppId?:string;metaAppSecret?:string;apiVersion:string}):Promise<AppWebhookCheck>{
+export async function checkAppWebhook(creds:{metaAppId?:string;metaAppSecret?:string;apiVersion:string},coexistence=false):Promise<AppWebhookCheck>{
   const unknown=(warning:string):AppWebhookCheck=>({state:'UNVERIFIED',messagesSubscribed:null,appCallbackUrl:null,warning});
   if(!creds.metaAppId||!creds.metaAppSecret)return unknown('Add the matching Meta App ID and App Secret to check the messages webhook field, or verify that field in Meta App Dashboard.');
   try{
@@ -19,8 +19,10 @@ export async function checkAppWebhook(creds:{metaAppId?:string;metaAppSecret?:st
     const subscription=body.data.find((s:any)=>s.object==='whatsapp_business_account');
     if(subscription&&!Array.isArray(subscription.fields))return unknown('Meta returned incomplete app webhook settings. Verify the active messages field in Meta App Dashboard.');
     const fields=Array.isArray(subscription?.fields)?subscription.fields.map((f:any)=>typeof f==='string'?f:f.name):[];
-    const subscribed=subscription?.active!==false&&fields.includes('messages');
-    return {state:subscribed?'READY':'ACTION_REQUIRED',messagesSubscribed:subscribed,appCallbackUrl:subscription?.callback_url||null,
-      ...(!subscribed?{warning:'The Meta app has no active messages webhook field for WhatsApp Business Account. In Meta App Dashboard, verify the callback URL and subscribe to messages, then run Test connection again.'}:{})};
+    const required=coexistence?['messages','account_update','history','smb_app_state_sync','smb_message_echoes']:['messages'];
+    const missing=required.filter(field=>!fields.includes(field));
+    const subscribed=subscription?.active!==false&&missing.length===0;
+    return {state:subscribed?'READY':'ACTION_REQUIRED',messagesSubscribed:subscription?.active!==false&&fields.includes('messages'),appCallbackUrl:subscription?.callback_url||null,
+      ...(!subscribed?{warning:(coexistence?'Missing Coexistence webhook subscriptions: '+missing.join(', ')+'. ':'')+'The Meta app has no active messages webhook field for WhatsApp Business Account. In Meta App Dashboard, verify the callback URL and subscribe to messages, then run Test connection again.'}:{})};
   }catch{return unknown('The app webhook field check could not finish. Verify messages in Meta App Dashboard, then run Test connection again.');}
 }

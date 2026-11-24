@@ -401,7 +401,7 @@ export class AutomationWorker {
     const effectivePhoneId = creds.phoneNumberId;
     const effectiveToken = creds.accessToken;
     const effectiveVersion = creds.apiVersion || 'v21.0';
-    const hasCredentials = Boolean(effectivePhoneId && effectiveToken);
+    const hasCredentials = creds.isFullyConfigured && Boolean(effectivePhoneId && effectiveToken);
 
     if (!hasCredentials) {
       if (allowSimulation) {
@@ -608,7 +608,7 @@ export class AutomationWorker {
     const effectivePhoneId = creds.phoneNumberId;
     const effectiveToken = creds.accessToken;
     const effectiveVersion = creds.apiVersion || 'v21.0';
-    const hasCredentials = Boolean(effectivePhoneId && effectiveToken);
+    const hasCredentials = creds.isFullyConfigured && Boolean(effectivePhoneId && effectiveToken);
 
     if (!hasCredentials) {
       if (allowSimulation) {
