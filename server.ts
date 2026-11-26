@@ -1,3 +1,4 @@
+import { createAdminRecovery } from './src/server/admin-recovery.ts';
 import { createApiCors } from './src/server/api-cors.ts';
 import { checkAppWebhook } from './src/server/app-webhook-check.ts';
 import { saveBusinessNumber } from './src/server/business-number-binding.ts';
@@ -6,7 +7,6 @@ import { effectiveWebhookWaba } from './src/server/coexistence-policy.ts';
 import {createTrafficMetrics} from './src/server/traffic-metrics.ts';
 import {sendingContactSelect,sendingBusinessSelect,accountStatusSelect,approvedTemplateIdentity} from './src/server/traffic-projections.ts';
 import {automationListSelect,validateAudience,readAutomationPage,templateListSelect,compactComponents,compactSnapshot,confirmedAutomationRows,readAutomationStatuses} from './src/server/automation-read.ts';
-import { createPasswordResetHandlers } from './src/server/password-reset.ts';
 import { schedulerAuthorized } from './src/server/scheduler-auth.ts';
 import { contactName } from './src/server/contact-name.ts';
 import { importGroupName, attachImportedGroup } from './src/server/contact-import-group.ts';
@@ -604,11 +604,12 @@ app.post('/api/auth/logout', async (req, res) => {
 
 
 // Password recovery. Mobile number or registered email may be used to request a short-lived code.
-const passwordResetHandlers = createPasswordResetHandlers(pool);
-app.post('/api/auth/forgot-password', passwordResetHandlers.request);
-app.post('/api/auth/forgot-password/request', passwordResetHandlers.request);
-app.post('/api/auth/reset-password', passwordResetHandlers.reset);
-app.post('/api/auth/forgot-password/reset', passwordResetHandlers.reset);
+const adminRecovery=createAdminRecovery(pool);
+app.post('/api/auth/forgot-password',adminRecovery.request);
+app.post('/api/auth/forgot-password/request',adminRecovery.request);
+app.post('/api/auth/reset-password',adminRecovery.redeem);
+app.post('/api/auth/forgot-password/reset',adminRecovery.redeem);
+app.post('/api/admin/businesses/:id/recovery',requireAuth,requireAdmin,adminRecovery.issue);
 
 app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -3746,7 +3747,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     if (!await checkDatabaseConnection()) throw new Error('Database unavailable');
     res.json({status:'ok',timestamp:new Date().toISOString(),service:'whatsapp-automation-backend',
-      build:'render-supabase-login-20261124',deploymentCommit:process.env.DEPLOY_COMMIT||null,
+      build:'render-supabase-recovery-20261126',deploymentCommit:process.env.DEPLOY_COMMIT||null,
       databaseProvider:process.env.DATABASE_PROVIDER||'postgresql',databaseTarget:process.env.DATABASE_TARGET_FINGERPRINT||null});
   } catch {
     res.status(503).json({status:'unavailable',error:'Database connection is not ready.'});
